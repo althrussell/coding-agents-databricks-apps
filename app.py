@@ -114,6 +114,7 @@ setup_state = {
         {"id": "hermes",     "label": "Configuring Hermes Agent",     "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "databricks", "label": "Setting up Databricks CLI",    "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "mlflow",     "label": "Enabling MLflow tracing",       "status": "pending", "started_at": None, "completed_at": None, "error": None},
+        {"id": "memory",     "label": "Wiring Lakebase memory",       "status": "pending", "started_at": None, "completed_at": None, "error": None},
     ]
 }
 
@@ -386,10 +387,13 @@ def run_setup():
         ]
         wait(futures)
 
-    # --- MLflow setup runs AFTER claude setup to avoid settings.json race ---
+    # --- Sequential post-parallel steps (these modify settings.json and must not race) ---
     # setup_mlflow.py merges env vars into ~/.claude/settings.json which
     # setup_claude.py also writes; running sequentially prevents clobbering.
     _run_step("mlflow", ["uv", "run", "python", "setup_mlflow.py"])
+
+    # setup_memory writes a Stop hook alongside setup_mlflow's hook — must run after
+    _run_step("memory", ["uv", "run", "python", "setup_memory.py"])
 
     # Sync latest token into all CLI configs — covers the race where PAT
     # rotation happened while a setup script was still installing (the
