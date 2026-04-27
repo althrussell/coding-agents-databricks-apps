@@ -44,7 +44,11 @@ if token:
 
     settings_path = claude_dir / "settings.json"
     settings_path.write_text(json.dumps(settings, indent=2))
-    print(f"Claude configured: {settings_path}")
+    # Match the 0o600 perms the Codex/Gemini setup scripts already use on
+    # their .env files. settings.json contains the PAT in the env block, so
+    # world-readable mode (umask default) is a needless exposure.
+    os.chmod(settings_path, 0o600)
+    print(f"Claude configured: {settings_path} (0600)")
 else:
     print("No DATABRICKS_TOKEN — skipping settings.json (will be configured after PAT setup)")
 
