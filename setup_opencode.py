@@ -13,6 +13,11 @@ from pathlib import Path
 
 from utils import ensure_https, get_gateway_host, get_npm_version
 
+# Opt-out: allow operators to disable OpenCode bundling without removing the file.
+if os.environ.get("ENABLE_OPENCODE", "true").strip().lower() in ("false", "0", "no"):
+    print("ENABLE_OPENCODE=false — skipping OpenCode CLI setup")
+    raise SystemExit(0)
+
 # content-filter proxy local proxy — sanitizes empty content blocks before reaching Databricks
 # (see https://github.com/sst/opencode/issues/5028)
 CONTENT_FILTER_PROXY_URL = "http://127.0.0.1:4000"

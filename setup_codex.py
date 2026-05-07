@@ -15,6 +15,11 @@ from pathlib import Path
 
 from utils import adapt_instructions_file, ensure_https, get_gateway_host, get_npm_version
 
+# Opt-out: allow operators to disable Codex bundling without removing the file.
+if os.environ.get("ENABLE_CODEX", "true").strip().lower() in ("false", "0", "no"):
+    print("ENABLE_CODEX=false — skipping Codex CLI setup")
+    raise SystemExit(0)
+
 # Set HOME if not properly set
 if not os.environ.get("HOME") or os.environ["HOME"] == "/":
     os.environ["HOME"] = "/app/python/source_code"

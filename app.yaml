@@ -14,9 +14,19 @@ env:
     value: databricks-claude-opus-4-6
   - name: HERMES_FALLBACK_MODEL
     value: databricks-claude-opus-4-6
-  # Set ENABLE_HERMES=false to skip Hermes Agent install. Other CLIs are unaffected.
-  - name: ENABLE_HERMES
+  # Per-CLI install toggle. Defaults reflect a "least-trusted code in the App
+  # container" stance: Claude Code (Anthropic) and Codex (OpenAI) ship from
+  # vendors with mature signing/SBOM/advisory pipelines and are enabled by
+  # default. Gemini, OpenCode, and Hermes are opt-in — set ENABLE_<CLI>=true
+  # to install them. Claude Code is the primary CLI and isn't toggleable here.
+  - name: ENABLE_CODEX
     value: "true"
+  - name: ENABLE_OPENCODE
+    value: "false"
+  - name: ENABLE_GEMINI
+    value: "false"
+  - name: ENABLE_HERMES
+    value: "false"
   - name: CLAUDE_CODE_DISABLE_AUTO_MEMORY
     value: 0
   - name: MAX_CONCURRENT_SESSIONS

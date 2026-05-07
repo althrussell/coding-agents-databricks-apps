@@ -17,6 +17,11 @@ from pathlib import Path
 
 from utils import adapt_instructions_file, ensure_https, get_gateway_host, get_npm_version
 
+# Opt-out: allow operators to disable Gemini bundling without removing the file.
+if os.environ.get("ENABLE_GEMINI", "true").strip().lower() in ("false", "0", "no"):
+    print("ENABLE_GEMINI=false — skipping Gemini CLI setup")
+    raise SystemExit(0)
+
 # Set HOME if not properly set
 if not os.environ.get("HOME") or os.environ["HOME"] == "/":
     os.environ["HOME"] = "/app/python/source_code"
