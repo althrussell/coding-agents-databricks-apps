@@ -71,11 +71,13 @@ This isn't just a terminal in the cloud. Running coding agents on Databricks giv
 
 ## MLflow Tracing
 
-Claude Code, Codex, and Gemini CLI sessions can all be **automatically traced** to a single Databricks MLflow experiment — flip one switch to turn them on.
+Claude Code and Codex sessions can both be **automatically traced** to a single Databricks MLflow experiment — flip one switch to turn them on.
+
+> **Gemini CLI tracing is not supported yet.** Gemini CLI ships only the JSON-format OTLP exporter, and Databricks' OTLP ingest currently only accepts protobuf. We've reported the gap to the product team and will re-enable Gemini tracing once it's addressed.
 
 ### Turning it on
 
-Set **`MLFLOW_TRACING_ENABLED=true`** in `app.yaml` (or your shell for local dev). That single variable enables tracing for all three CLIs. Tracing is **off by default** to keep deploys lightweight — opt in when you want it.
+Set **`MLFLOW_TRACING_ENABLED=true`** in `app.yaml` (or your shell for local dev). That single variable enables tracing for both CLIs. Tracing is **off by default** to keep deploys lightweight — opt in when you want it.
 
 ```yaml
 # app.yaml
@@ -92,14 +94,11 @@ MLFLOW_TRACING_ENABLED=true
         ├──► Claude Code: Stop hook fires on session end →
         │     mlflow.claude_code.hooks.stop_hook_handler() logs the transcript
         │
-        ├──► Codex: @mlflow/codex notify hook fires after each turn →
-        │     trace appended to the experiment
-        │
-        └──► Gemini CLI: native OpenTelemetry exporter streams spans to
-              https://{workspace}/api/2.0/otel (Databricks' OTLP ingest)
+        └──► Codex: @mlflow/codex notify hook fires after each turn →
+              trace appended to the experiment
 ```
 
-All three land in the same MLflow experiment, so you can compare runs across agents side by side.
+Both land in the same MLflow experiment, so you can compare runs across agents side by side.
 
 ### Where traces live
 
@@ -121,12 +120,11 @@ Tracing is wired up during app startup:
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| `MLFLOW_TRACING_ENABLED` | `true`/`false` (default `false`) | Master switch for Claude + Codex + Gemini |
+| `MLFLOW_TRACING_ENABLED` | `true`/`false` (default `false`) | Master switch for Claude + Codex |
 | `MLFLOW_CLAUDE_TRACING_ENABLED` | mirrors `MLFLOW_TRACING_ENABLED` | Gates Claude's Stop hook at runtime |
 | `MLFLOW_TRACKING_URI` | `databricks` | Routes traces to the Databricks backend |
 | `MLFLOW_EXPERIMENT_NAME` | `/Users/{owner}/{app}` | Target experiment path |
 | `MLFLOW_EXPERIMENT_ID` | resolved from name | Set in `~/.codex/.env` (Codex needs an ID) |
-| `GEMINI_TELEMETRY_OTLP_ENDPOINT` | `https://{ws}/api/2.0/otel` | Databricks-hosted OTLP collector |
 
 Tracing setup is skipped gracefully when `APP_OWNER` is not set (e.g., local dev without Databricks) or when `MLFLOW_TRACING_ENABLED` is left at its default `false`.
 
@@ -290,7 +288,7 @@ This template repo opens that vision up for every Databricks user — no IDE set
 | `CODEX_MODEL` | No | Codex model name (default: `databricks-gpt-5-5`) |
 | `GEMINI_MODEL` | No | Gemini model name (default: `databricks-gemini-2-5-pro`) |
 | `DATABRICKS_GATEWAY_HOST` | No | AI Gateway URL override. Auto-discovered from `DATABRICKS_WORKSPACE_ID` if unset |
-| `MLFLOW_TRACING_ENABLED` | No | Set to `"true"` to enable MLflow tracing for Claude, Codex, and Gemini in one switch (default `"false"`) |
+| `MLFLOW_TRACING_ENABLED` | No | Set to `"true"` to enable MLflow tracing for Claude and Codex in one switch (default `"false"`) |
 
 ### Security Model
 
