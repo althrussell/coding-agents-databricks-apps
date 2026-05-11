@@ -151,7 +151,10 @@ if tracing_enabled and experiment_name:
         "",
         "# MLflow tracing (enabled by MLFLOW_TRACING_ENABLED=true)",
         "GEMINI_TELEMETRY_ENABLED=true",
-        "GEMINI_TELEMETRY_TARGET=otlp",
+        # Gemini CLI only accepts `local` or `gcp` here. `local` is correct
+        # for "ship to a custom OTLP endpoint" — the endpoint URL below is
+        # what routes traces to Databricks.
+        "GEMINI_TELEMETRY_TARGET=local",
         f"GEMINI_TELEMETRY_OTLP_ENDPOINT={otlp_endpoint}",
         "GEMINI_TELEMETRY_OTLP_PROTOCOL=http",
         f"OTEL_EXPORTER_OTLP_HEADERS={','.join(headers)}",
