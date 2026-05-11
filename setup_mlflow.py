@@ -1,13 +1,8 @@
-"""Configure MLflow tracing for Claude Code sessions.
+"""Wire up Claude Code's Stop hook for MLflow tracing.
 
-Merges MLflow env vars and a Stop hook into ~/.claude/settings.json so that
-every Claude Code session automatically logs traces to a Databricks MLflow
-experiment at /Users/{app_owner}/{app_name}.
-
-Tracing is gated by the `MLFLOW_TRACING_ENABLED` environment variable. The
-same flag also enables Codex (via @mlflow/codex notify hook in setup_codex.py)
-and Gemini CLI (via native OTLP exporter in setup_gemini.py) — one switch,
-three agents.
+Gated on MLFLOW_TRACING_ENABLED — the same switch enables Codex and Gemini
+tracing in their respective setup scripts. Traces land in
+/Users/{app_owner}/{app_name}.
 """
 
 import os
@@ -39,12 +34,11 @@ experiment_name = f"/Users/{app_owner}/{app_name}"
 # Single switch that controls tracing for Claude, Codex, and Gemini.
 # Defaults to "false" so opt-in requires explicit configuration.
 tracing_enabled = os.environ.get("MLFLOW_TRACING_ENABLED", "false").lower() == "true"
-tracing_value = "true" if tracing_enabled else "false"
 
 # Merge MLflow env vars (always written so flipping the flag at runtime works
 # without rerunning setup — Claude reads MLFLOW_CLAUDE_TRACING_ENABLED on launch).
 settings.setdefault("env", {})
-settings["env"]["MLFLOW_CLAUDE_TRACING_ENABLED"] = tracing_value
+settings["env"]["MLFLOW_CLAUDE_TRACING_ENABLED"] = "true" if tracing_enabled else "false"
 settings["env"]["MLFLOW_TRACKING_URI"] = "databricks"
 settings["env"]["MLFLOW_EXPERIMENT_NAME"] = experiment_name
 # Override container-level OTEL endpoint so MLflow uses its native MlflowV3SpanExporter
