@@ -15,7 +15,13 @@ import json
 import subprocess
 from pathlib import Path
 
-from utils import adapt_instructions_file, ensure_https, get_gateway_host, get_npm_version
+from utils import (
+    adapt_instructions_file,
+    ensure_https,
+    get_gateway_host,
+    get_npm_version,
+    resolve_mlflow_experiment_id,
+)
 
 # Set HOME if not properly set
 if not os.environ.get("HOME") or os.environ["HOME"] == "/":
@@ -118,15 +124,42 @@ except Exception as e:
 # Write .env file with Databricks endpoint configuration
 # Gemini CLI auto-loads env from ~/.gemini/.env
 # The Google-native endpoint on Databricks mirrors /serving-endpoints/anthropic
-env_content = f"""# Databricks Model Serving - Google Gemini native endpoint
-GEMINI_MODEL={gemini_model}
-GOOGLE_GEMINI_BASE_URL={gemini_base_url}
-GEMINI_API_KEY_AUTH_MECHANISM=bearer
-GEMINI_API_KEY={auth_token}
-"""
+env_lines = [
+    "# Databricks Model Serving - Google Gemini native endpoint",
+    f"GEMINI_MODEL={gemini_model}",
+    f"GOOGLE_GEMINI_BASE_URL={gemini_base_url}",
+    "GEMINI_API_KEY_AUTH_MECHANISM=bearer",
+    f"GEMINI_API_KEY={auth_token}",
+]
+
+# Optional: native OTLP tracing into Databricks-hosted MLflow.
+# Single switch (MLFLOW_TRACING_ENABLED=true) enables Claude + Codex + Gemini.
+tracing_enabled = os.environ.get("MLFLOW_TRACING_ENABLED", "false").lower() == "true"
+app_owner = os.environ.get("APP_OWNER", "")
+app_name = os.environ.get("DATABRICKS_APP_NAME", "coding-agents")
+experiment_name = f"/Users/{app_owner}/{app_name}" if app_owner else ""
+
+if tracing_enabled and experiment_name:
+    experiment_id = resolve_mlflow_experiment_id(host, token, experiment_name)
+    # Databricks exposes an OTLP/HTTP traces collector at /api/2.0/otel.
+    # Gemini CLI's native OTel exporter appends /v1/traces to this base URL.
+    otlp_endpoint = f"{host}/api/2.0/otel"
+    headers = [f"x-mlflow-experiment-id={experiment_id}"] if experiment_id else []
+    # Databricks requires bearer auth on the OTLP ingest endpoint.
+    headers.append(f"Authorization=Bearer {auth_token}")
+    env_lines.extend([
+        "",
+        "# MLflow tracing (enabled by MLFLOW_TRACING_ENABLED=true)",
+        "GEMINI_TELEMETRY_ENABLED=true",
+        "GEMINI_TELEMETRY_TARGET=otlp",
+        f"GEMINI_TELEMETRY_OTLP_ENDPOINT={otlp_endpoint}",
+        "GEMINI_TELEMETRY_OTLP_PROTOCOL=http",
+        f"OTEL_EXPORTER_OTLP_HEADERS={','.join(headers)}",
+    ])
+    print(f"Gemini MLflow tracing configured: experiment_id={experiment_id or 'unresolved'}")
 
 env_path = gemini_dir / ".env"
-env_path.write_text(env_content)
+env_path.write_text("\n".join(env_lines) + "\n")
 env_path.chmod(0o600)
 print(f"Gemini CLI env configured: {env_path}")
 

@@ -64,9 +64,25 @@ def _update_opencode(token):
 
 
 def _update_gemini(token):
-    """Update GEMINI_API_KEY in ~/.gemini/.env."""
+    """Update GEMINI_API_KEY (and OTEL bearer, if tracing is on) in ~/.gemini/.env."""
     path = os.path.join(_HOME, ".gemini", ".env")
     _replace_dotenv_key(path, "GEMINI_API_KEY", token)
+    # When MLflow tracing is on, OTEL_EXPORTER_OTLP_HEADERS embeds the PAT as
+    # `Authorization=Bearer <token>`. Rotate that piece too, otherwise OTLP
+    # ingestion 401s ~10 minutes after deploy.
+    try:
+        with open(path) as f:
+            content = f.read()
+        new_content = re.sub(
+            r'(OTEL_EXPORTER_OTLP_HEADERS=.*?Authorization=Bearer )[^,\n]+',
+            rf'\g<1>{token}',
+            content,
+        )
+        if new_content != content:
+            with open(path, "w") as f:
+                f.write(new_content)
+    except OSError:
+        pass
 
 
 def _update_hermes(token):

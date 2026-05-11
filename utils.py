@@ -226,3 +226,40 @@ def ensure_https(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         return f"https://{url}"
     return url
+
+
+def resolve_mlflow_experiment_id(host: str, token: str, experiment_name: str) -> str | None:
+    """Look up (or create) a Databricks MLflow experiment by name and return its ID.
+
+    Used by Codex and Gemini CLI tracing setup — both need an experiment *ID*,
+    not name, in their config files / OTLP headers.
+
+    Returns None on any failure so callers can degrade gracefully.
+    """
+    if not host or not token or not experiment_name:
+        return None
+    host = ensure_https(host.rstrip("/"))
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        # 1. Try to find an existing experiment
+        resp = requests.get(
+            f"{host}/api/2.0/mlflow/experiments/get-by-name",
+            headers=headers,
+            params={"experiment_name": experiment_name},
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("experiment", {}).get("experiment_id")
+
+        # 2. Create it if missing
+        resp = requests.post(
+            f"{host}/api/2.0/mlflow/experiments/create",
+            headers=headers,
+            json={"name": experiment_name},
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("experiment_id")
+    except requests.RequestException as exc:
+        logger.warning(f"Could not resolve MLflow experiment '{experiment_name}': {exc}")
+    return None
