@@ -21,3 +21,6 @@ env:
     value: 0
   - name: MAX_CONCURRENT_SESSIONS
     value: "5"
+  # Smoke-testing MLflow auto-tracing for Claude + Codex + Gemini.
+  - name: MLFLOW_TRACING_ENABLED
+    value: "true"
