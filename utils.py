@@ -238,28 +238,18 @@ def resolve_mlflow_experiment_id(host: str, token: str, experiment_name: str) ->
     """
     if not host or not token or not experiment_name:
         return None
-    host = ensure_https(host.rstrip("/"))
-    headers = {"Authorization": f"Bearer {token}"}
     try:
-        # 1. Try to find an existing experiment
-        resp = requests.get(
-            f"{host}/api/2.0/mlflow/experiments/get-by-name",
-            headers=headers,
-            params={"experiment_name": experiment_name},
-            timeout=5.0,
-        )
-        if resp.status_code == 200:
-            return resp.json().get("experiment", {}).get("experiment_id")
+        from databricks.sdk import WorkspaceClient
+        from databricks.sdk.errors import ResourceDoesNotExist
 
-        # 2. Create it if missing
-        resp = requests.post(
-            f"{host}/api/2.0/mlflow/experiments/create",
-            headers=headers,
-            json={"name": experiment_name},
-            timeout=5.0,
-        )
-        if resp.status_code == 200:
-            return resp.json().get("experiment_id")
-    except requests.RequestException as exc:
+        w = WorkspaceClient(host=ensure_https(host.rstrip("/")), token=token)
+        try:
+            exp = w.experiments.get_by_name(experiment_name=experiment_name)
+            if exp and exp.experiment:
+                return exp.experiment.experiment_id
+        except ResourceDoesNotExist:
+            pass  # fall through to create
+        return w.experiments.create_experiment(name=experiment_name).experiment_id
+    except Exception as exc:
         logger.warning(f"Could not resolve MLflow experiment '{experiment_name}': {exc}")
-    return None
+        return None
