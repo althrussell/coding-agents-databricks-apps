@@ -50,7 +50,16 @@ hermes_bin = home / ".local" / "bin" / "hermes"
 # httpx, pyyaml, pydantic) cover chat + Databricks model serving. Not on PyPI,
 # so we install directly from GitHub. uv tool install handles venv + binary.
 # The mcp package is needed for HTTP transport (DeepWiki, Exa MCP servers).
-HERMES_PKG = "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git"
+#
+# Pinned to a specific commit SHA (≥7 days old at the time of pinning) so a
+# force-push to NousResearch/hermes-agent's default branch can't ship code
+# into every CoDA container on the next cold start. Bump deliberately on
+# CoDA releases; do not auto-update.
+HERMES_PIN_SHA = "8e4f3ba4da5337e1ad674a876ac4fb8490f0b79c"  # 2026-05-08
+HERMES_PKG = (
+    "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git"
+    f"@{HERMES_PIN_SHA}"
+)
 HERMES_EXTRA_DEPS = ["mcp>=1.2.0"]
 
 # 1. Install Hermes Agent (always, even without token).
@@ -193,6 +202,15 @@ if config_path.exists():
 
 if should_write:
     config_path.write_text("\n".join(lines))
+    # 0o600 — the file contains the plaintext PAT in `api_key:`. Without an
+    # explicit chmod the file inherits umask-derived perms (often 0o644 on
+    # container filesystems), making the token readable by any other process
+    # under the same UID. Matches setup_opencode.py's auth.json handling.
+    try:
+        config_path.chmod(0o600)
+    except OSError:
+        # Best effort — chmod can fail on some workspace filesystems.
+        pass
     print(f"Hermes config written: {config_path}")
 
 # 5. Adapt CLAUDE.md -> ~/.hermes/HERMES.md for first-run context
