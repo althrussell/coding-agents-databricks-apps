@@ -53,7 +53,22 @@ logger = logging.getLogger(__name__)
 # PAT auto-rotation — initialized after sessions dict is defined (see below)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
-app.secret_key = os.urandom(24)
+# Flask secret_key — signs session cookies. Read from FLASK_SECRET_KEY env
+# var (typically wired to a Databricks secret in app.yaml) so sessions
+# survive worker restarts and stay valid across multiple workers if we
+# ever scale beyond one. Falls back to a fresh random key for local dev,
+# which is fine because dev sessions are short-lived and single-process.
+_secret_key_env = os.environ.get("FLASK_SECRET_KEY", "").strip()
+if _secret_key_env:
+    app.secret_key = _secret_key_env.encode()
+else:
+    app.secret_key = os.urandom(24)
+    logger_for_secret = logging.getLogger(__name__)
+    logger_for_secret.warning(
+        "FLASK_SECRET_KEY not set — generated an ephemeral key. "
+        "Existing sessions will be invalidated on every worker restart. "
+        "For production, wire FLASK_SECRET_KEY to a Databricks secret in app.yaml."
+    )
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32 MB — aligned with Claude Code's 30 MB file limit
 
 # WebSocket support via Flask-SocketIO (simple-websocket transport, threading mode)
@@ -803,9 +818,23 @@ def cleanup_stale_sessions():
 
 @app.before_request
 def authorize_request():
-    """Check authorization before processing any request."""
-    # Skip auth for health check, setup status, and Socket.IO (has own auth via connect event)
-    if request.path in ("/health", "/api/setup-status", "/api/pat-status", "/api/configure-pat", "/api/app-state") or request.path.startswith("/socket.io"):
+    """Check authorization before processing any request.
+
+    The exempt list contains endpoints needed before the app owner has
+    been resolved or before the user has configured a PAT — the UI
+    polls these to drive its setup flow. Everything else requires the
+    requester's X-Forwarded-Email to match app_owner (see
+    check_authorization).
+    """
+    # /api/app-state was historically in this exempt list — removed because
+    # it leaks app_owner email + PAT rotation timing to any unauthenticated
+    # caller. The endpoint has no pre-auth use case in the UI.
+    if request.path in (
+        "/health",
+        "/api/setup-status",
+        "/api/pat-status",
+        "/api/configure-pat",
+    ) or request.path.startswith("/socket.io"):
         return None
 
     authorized, user = check_authorization()

@@ -21,3 +21,16 @@ env:
     value: 0
   - name: MAX_CONCURRENT_SESSIONS
     value: "5"
+  # ─── Enterprise security knobs ─────────────────────────────────────────
+  # Stable Flask session-cookie key. Without this, the key is regenerated
+  # on every worker restart and existing sessions get invalidated. Wire to
+  # a Databricks secret in production (see app.yaml.template for syntax).
+  # - name: FLASK_SECRET_KEY
+  #   valueFrom: coda-prod/flask-secret-key
+  #
+  # Set to "true" to disable CoDA's outbound telemetry to Databricks
+  # (event-name pings via the SDK User-Agent — see telemetry.py).
+  # Regulated deployments (banks, retail PII, etc.) typically need this
+  # off so the third-party-risk register has no undisclosed data flow.
+  # - name: CODA_TELEMETRY_DISABLED
+  #   value: "true"
