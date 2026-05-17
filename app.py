@@ -804,8 +804,18 @@ def cleanup_stale_sessions():
 @app.before_request
 def authorize_request():
     """Check authorization before processing any request."""
-    # Skip auth for health check, setup status, and Socket.IO (has own auth via connect event)
-    if request.path in ("/health", "/api/setup-status", "/api/pat-status", "/api/configure-pat", "/api/app-state") or request.path.startswith("/socket.io"):
+    # Auth-exempt:
+    #   /health           — minimal liveness probe, returns no sensitive data
+    #   /api/configure-pat — owner-gates itself in-handler (cannot use the
+    #                        before_request gate; needed during bootstrap before
+    #                        app_owner is resolved). See configure_pat() guard.
+    #   /socket.io/*      — has own auth gate via the 'connect' WS event
+    #
+    # Previously exempt but now owner-gated (closed unauth info-disclosure
+    # surface): /api/setup-status, /api/pat-status, /api/app-state. All three
+    # are only polled by the frontend, which loads from "/" (auth'd) so already
+    # has SSO cookies — no functional regression.
+    if request.path in ("/health", "/api/configure-pat") or request.path.startswith("/socket.io"):
         return None
 
     authorized, user = check_authorization()
@@ -905,17 +915,11 @@ def attach_session():
 
 @app.route("/health")
 def health():
-    with sessions_lock:
-        session_count = len(sessions)
-    with setup_lock:
-        current_setup_status = setup_state["status"]
-    return jsonify({
-        "status": "healthy",
-        "version": APP_VERSION,
-        "setup_status": current_setup_status,
-        "active_sessions": session_count,
-        "session_timeout_seconds": SESSION_TIMEOUT_SECONDS
-    })
+    # Minimal liveness response — no version, session count, or setup state
+    # exposed to unauthenticated callers. Version-targeted exploit selection
+    # is the avoided footgun; richer detail is available via authenticated
+    # endpoints (/api/version, /api/sessions, /api/setup-status).
+    return jsonify({"status": "healthy"})
 
 
 @app.route("/api/version")

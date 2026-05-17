@@ -271,3 +271,98 @@ class TestCaseInsensitiveAuth:
             assert result == "user@example.com", (
                 f"get_request_user() should lowercase, got '{result}'"
             )
+
+
+# ---------------------------------------------------------------------------
+# 3. Info-disclosure endpoints — auth-gated or trimmed
+# ---------------------------------------------------------------------------
+
+class TestInfoDisclosureEndpoints:
+    """These endpoints were previously reachable without auth and leaked
+    info about the app's state. They are now either owner-gated (setup-status,
+    pat-status, app-state) or minimally informative (health).
+    """
+
+    def _post_or_get(self, app_module, method, path, headers):
+        client = _make_client(app_module)
+        with mock.patch.object(app_module, "_is_databricks_apps", return_value=True):
+            if method == "GET":
+                return client.get(path, headers=headers)
+            return client.post(path, headers=headers)
+
+    # -- /api/setup-status now requires auth --
+
+    def test_setup_status_denied_for_non_owner(self):
+        app_module = _get_app_module()
+        original = app_module.app_owner
+        try:
+            app_module.app_owner = "owner@databricks.com"
+            resp = self._post_or_get(app_module, "GET", "/api/setup-status",
+                                     {"X-Forwarded-Email": "intruder@evil.com"})
+            assert resp.status_code == 403, (
+                f"GET /api/setup-status should 403 for non-owner, got {resp.status_code}"
+            )
+        finally:
+            app_module.app_owner = original
+
+    def test_setup_status_allowed_for_owner(self):
+        app_module = _get_app_module()
+        original = app_module.app_owner
+        try:
+            app_module.app_owner = "owner@databricks.com"
+            resp = self._post_or_get(app_module, "GET", "/api/setup-status",
+                                     {"X-Forwarded-Email": "owner@databricks.com"})
+            assert resp.status_code == 200, (
+                f"Owner should see setup-status, got {resp.status_code}"
+            )
+        finally:
+            app_module.app_owner = original
+
+    # -- /api/pat-status now requires auth --
+
+    def test_pat_status_denied_for_non_owner(self):
+        app_module = _get_app_module()
+        original = app_module.app_owner
+        try:
+            app_module.app_owner = "owner@databricks.com"
+            resp = self._post_or_get(app_module, "GET", "/api/pat-status",
+                                     {"X-Forwarded-Email": "intruder@evil.com"})
+            assert resp.status_code == 403, (
+                f"GET /api/pat-status should 403 for non-owner, got {resp.status_code}"
+            )
+        finally:
+            app_module.app_owner = original
+
+    # -- /api/app-state now requires auth --
+
+    def test_app_state_denied_for_non_owner(self):
+        app_module = _get_app_module()
+        original = app_module.app_owner
+        try:
+            app_module.app_owner = "owner@databricks.com"
+            resp = self._post_or_get(app_module, "GET", "/api/app-state",
+                                     {"X-Forwarded-Email": "intruder@evil.com"})
+            assert resp.status_code == 403, (
+                f"GET /api/app-state should 403 for non-owner, got {resp.status_code}"
+            )
+        finally:
+            app_module.app_owner = original
+
+    # -- /health stays unauth but returns ONLY {"status": "healthy"} --
+
+    def test_health_minimal_response_no_version(self):
+        """Unauthenticated /health must NOT leak version, session counts, or
+        setup state — those enable version-targeted exploit selection."""
+        app_module = _get_app_module()
+        client = _make_client(app_module)
+        # No SSO header; health stays unauth-exempt
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body == {"status": "healthy"}, (
+            f"/health should return only status, got keys: {list(body.keys())}"
+        )
+        # Explicit anti-leak assertions
+        assert "version" not in body, "/health must not expose version"
+        assert "setup_status" not in body, "/health must not expose setup_status"
+        assert "active_sessions" not in body, "/health must not expose session count"
