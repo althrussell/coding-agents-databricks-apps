@@ -21,3 +21,5 @@ env:
     value: 0
   - name: MAX_CONCURRENT_SESSIONS
     value: "5"
+  # Override PAT_ROTATION_INTERVAL / PAT_TOKEN_LIFETIME here for e2e testing.
+  # Defaults (10 min / 15 min) live in pat_rotator.py.
