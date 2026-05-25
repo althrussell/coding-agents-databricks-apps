@@ -129,31 +129,35 @@ print(f"Onboarding skipped + MCPs configured ({len(mcp_servers)} servers): {clau
 local_bin = home / ".local" / "bin"
 claude_bin = local_bin / "claude"
 
-# Honour CLAUDE_INSTALLER_URL for enterprise environments where claude.ai is
-# firewalled — defaults to the public installer when unset. The URL is
-# validated by enterprise_config to reject shell metacharacters before it
-# reaches subprocess. Additionally, we avoid embedding the URL in a shell
-# string by piping curl's output into bash via positional args — even if a
-# malicious URL somehow slipped through validation, it would land as a curl
-# argument, not as shell.
-from enterprise_config import claude_installer_url
+if os.environ.get("SKIP_CLAUDE_INSTALL"):
+    print("SKIP_CLAUDE_INSTALL set — skipping CLI install")
+    result = type("R", (), {"returncode": 0, "stderr": ""})()
+else:
+    # Honour CLAUDE_INSTALLER_URL for enterprise environments where claude.ai is
+    # firewalled — defaults to the public installer when unset. The URL is
+    # validated by enterprise_config to reject shell metacharacters before it
+    # reaches subprocess. Additionally, we avoid embedding the URL in a shell
+    # string by piping curl's output into bash via positional args — even if a
+    # malicious URL somehow slipped through validation, it would land as a curl
+    # argument, not as shell.
+    from enterprise_config import claude_installer_url
 
-installer_url = claude_installer_url()
-print(f"Installing/upgrading Claude Code CLI from {installer_url}...")
-curl_proc = subprocess.Popen(
-    ["curl", "-fsSL", installer_url],
-    stdout=subprocess.PIPE,
-    env={**os.environ, "HOME": str(home)},
-)
-result = subprocess.run(
-    ["bash"],
-    stdin=curl_proc.stdout,
-    env={**os.environ, "HOME": str(home)},
-    capture_output=True,
-    text=True,
-)
-curl_proc.stdout.close()
-curl_proc.wait()
+    installer_url = claude_installer_url()
+    print(f"Installing/upgrading Claude Code CLI from {installer_url}...")
+    curl_proc = subprocess.Popen(
+        ["curl", "-fsSL", installer_url],
+        stdout=subprocess.PIPE,
+        env={**os.environ, "HOME": str(home)},
+    )
+    result = subprocess.run(
+        ["bash"],
+        stdin=curl_proc.stdout,
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+    )
+    curl_proc.stdout.close()
+    curl_proc.wait()
 if result.returncode == 0:
     print("Claude Code CLI installed successfully")
 else:
