@@ -1,5 +1,7 @@
 # CoDA MCP Server Implementation Plan
 
+> **⚠️ SUPERSEDED — historical reference only.** This was the v1 implementation plan (5 tools, gunicorn + WSGI bridge). The shipped implementation diverged during iteration: the production design is documented in [`docs/mcp-v2-background-execution.md`](../mcp-v2-background-execution.md) (3 tools — `coda_run`, `coda_inbox`, `coda_get_result` — on uvicorn + native ASGI). Kept in the tree so reviewers can see the design evolution; do not follow this plan as-is.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Add an MCP server endpoint (`/mcp`) to CoDA so Databricks Genie Code can delegate coding tasks to Hermes Agent via the MCP protocol.

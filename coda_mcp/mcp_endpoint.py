@@ -1,8 +1,14 @@
-"""Flask-native MCP JSON-RPC endpoint.
+"""Flask Blueprint fallback for MCP JSON-RPC.
 
-Implements the MCP protocol as a plain Flask route — no ASGI bridge needed.
-This keeps gunicorn + Flask-SocketIO working for WebSocket terminal I/O
-while serving MCP over standard HTTP.
+NOTE: This is NOT the production path. Production deployment uses
+`coda_mcp.mcp_asgi:app` served by uvicorn, which mounts the native MCP
+SDK Streamable HTTP transport at /mcp. This module is a Flask-native
+JSON-RPC fallback used only under WSGI runtimes (gunicorn local dev,
+tests that exercise the Flask test client without spinning up ASGI).
+
+Both paths expose the same three tools (coda_run, coda_inbox,
+coda_get_result) and produce equivalent JSON-RPC responses, so switching
+between them is transparent to MCP clients.
 """
 import asyncio
 import json

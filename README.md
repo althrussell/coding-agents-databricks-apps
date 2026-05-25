@@ -295,13 +295,14 @@ See [MCP v2 Design Doc](docs/mcp-v2-background-execution.md) for the full protoc
 <summary><strong>🏗️ Architecture</strong></summary>
 
 ```
-┌─────────────────────┐  WebSocket    ┌─────────────────────┐
-│   Browser Client    │◄═══════════►│   Gunicorn + Flask   │
-│   (xterm.js)        │  (primary)    │   + Flask-SocketIO   │
-│                     │───────────►│   (PTY Manager)      │
-│                     │  HTTP Poll    │                     │
-│                     │  (fallback)   │                     │
-└─────────────────────┘               └─────────────────────┘
+┌─────────────────────┐  WebSocket    ┌──────────────────────────────────┐
+│   Browser Client    │◄═══════════►│   uvicorn (ASGI)                  │
+│   (xterm.js)        │  (fallback)   │   ├─ python-socketio (Socket.IO) │
+│                     │───────────►│   ├─ FastMCP /mcp                │
+│                     │  HTTP Poll    │   └─ WSGIMiddleware(Flask + PTY) │
+│                     │  (primary     │                                  │
+│                     │   under uvicorn)                                │
+└─────────────────────┘               └──────────────────────────────────┘
          │                                     │
          │ on first load                       │ on startup
          ▼                                     ▼
@@ -319,7 +320,7 @@ See [MCP v2 Design Doc](docs/mcp-v2-background-execution.md) for the full protoc
 
 ### Startup Flow
 
-1. Gunicorn starts, calls `initialize_app()` via `post_worker_init` hook
+1. uvicorn starts `coda_mcp.mcp_asgi:app`, which calls `initialize_app()` during ASGI lifespan startup (Flask mounted via `WSGIMiddleware`; MCP mounted at `/mcp` via native ASGI; Socket.IO wraps both)
 2. App serves the terminal UI with inline setup progress
 3. Background thread runs setup: 5 sequential steps (git config, micro editor, GitHub CLI, Databricks CLI upgrade, content-filter proxy), then 6 agent setups (`setup/setup_claude.py`, `setup/setup_codex.py`, etc.) run in parallel via `ThreadPoolExecutor`
 4. `/api/setup-status` endpoint reports progress to the UI
@@ -378,9 +379,9 @@ See [MCP v2 Design Doc](docs/mcp-v2-background-execution.md) for the full protoc
 
 Single-user app — the owner is resolved via the app's service principal and Apps API (`app.creator`), with no PAT required at deploy time. Authorization checks `X-Forwarded-Email` against `app.creator`. On first terminal session, the user pastes a short-lived PAT interactively. Tokens auto-rotate every 10 minutes (15-minute lifetime), with old tokens proactively revoked. On restart, the user re-pastes (no persistence by design).
 
-### Gunicorn
+### Server
 
-Production uses `workers=1` (PTY state is process-local), `threads=16` (concurrent polling + WebSocket), `gthread` worker class, `timeout=60` (long-lived WebSocket connections).
+Production uses `uvicorn` (single worker — PTY state is process-local) serving `coda_mcp.mcp_asgi:app`. The ASGI stack composes `python-socketio.ASGIApp` → MCP Streamable HTTP at `/mcp` → `WSGIMiddleware(Flask)` for the terminal UI. WebSocket transport falls back to HTTP polling under uvicorn — the `static/poll-worker.js` Web Worker already handles this transparently. `gunicorn.conf.py` is retained for reference and local WSGI-only dev; it is **not** used in production.
 
 </details>
 
@@ -391,10 +392,10 @@ Production uses `workers=1` (PTY state is process-local), `threads=16` (concurre
 coding-agents-databricks-apps/
 ├── app.py                       # Flask backend + PTY management + setup orchestration
 ├── app_state.py                 # Shared app state (setup progress, session registry)
-├── app.yaml                     # Databricks Apps deployment config (gunicorn)
+├── app.yaml                     # Databricks Apps deployment config (uvicorn entrypoint)
 ├── cli_auth.py                  # Interactive PAT setup + CLI credential writer
 ├── content_filter_proxy.py      # Proxy that sanitises empty-content blocks for OpenCode
-├── gunicorn.conf.py             # Gunicorn production server config
+├── gunicorn.conf.py             # Legacy WSGI-only config (unused in production; uvicorn is the entrypoint)
 ├── pat_rotator.py               # Background PAT auto-rotation (10-min cycle)
 ├── pyproject.toml               # Package metadata + uv config (supply-chain guardrails)
 ├── requirements.txt             # Compiled from pyproject.toml (Dependabot compatibility)
@@ -450,4 +451,4 @@ coding-agents-databricks-apps/
 
 ## Technologies
 
-Flask · Flask-SocketIO · Socket.IO · Gunicorn · xterm.js · Python PTY · uv · Databricks SDK · Databricks AI Gateway · MLflow
+Flask · Flask-SocketIO · Socket.IO · uvicorn · MCP (Streamable HTTP) · xterm.js · Python PTY · uv · Databricks SDK · Databricks AI Gateway · MLflow
