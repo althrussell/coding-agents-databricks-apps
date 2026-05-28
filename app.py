@@ -988,6 +988,22 @@ def terminate_session(session_id, pid, master_fd):
     with sessions_lock:
         sessions.pop(session_id, None)
 
+    # Clean up the project dir if coda_interactive created one.
+    # Done here (not in mcp_close_pty_session) so BOTH the graceful close
+    # path AND the idle reaper (which calls terminate_session directly) hit
+    # this cleanup. Safe for HTTP-created sessions too — they never planted
+    # a dir at this path, so os.path.isdir short-circuits.
+    import shutil
+    project_dir = os.path.join(
+        os.path.expanduser("~/.coda/projects"),
+        session_id,
+    )
+    if os.path.isdir(project_dir):
+        try:
+            shutil.rmtree(project_dir)
+        except OSError as e:
+            logger.warning("Failed to clean up project dir %s: %s", project_dir, e)
+
 
 def _get_session_process(pid):
     """Return the name of the foreground child process for *pid*.
@@ -1530,26 +1546,15 @@ def mcp_send_input(session_id: str, data: str):
 
 
 def mcp_close_pty_session(session_id: str):
-    """Close a PTY session."""
+    """Close a PTY session.
+
+    Project-dir cleanup (for coda_interactive sessions) lives inside
+    terminate_session so the idle reaper hits it too.
+    """
     session = _get_session(session_id)
     if not session:
         return
     terminate_session(session_id, session["pid"], session["master_fd"])
-
-    # Clean up the project dir if coda_interactive created one.
-    # Tying the project's disk lifecycle to the PTY's lifecycle means there is
-    # no separate timer / cleanup queue to maintain. Best-effort: a stuck file
-    # logs a warning but does not break the close path.
-    import shutil
-    project_dir = os.path.join(
-        os.path.expanduser("~/.coda/projects"),
-        session_id,
-    )
-    if os.path.isdir(project_dir):
-        try:
-            shutil.rmtree(project_dir)
-        except OSError as e:
-            logger.warning("Failed to clean up project dir %s: %s", project_dir, e)
 
 
 @app.route("/api/input", methods=["POST"])

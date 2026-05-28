@@ -154,3 +154,38 @@ def test_mcp_close_pty_session_handles_missing_project_dir(tmp_path, monkeypatch
                 mcp_close_pty_session(sid)
             except Exception:
                 pass
+
+
+@_pty_skip
+def test_terminate_session_removes_project_dir(tmp_path, monkeypatch):
+    """The idle reaper calls terminate_session directly. Project dir must still be cleaned."""
+    import os
+    from app import mcp_create_pty_session, sessions, terminate_session, mcp_close_pty_session
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    sid = None
+    try:
+        sid = mcp_create_pty_session(label="t-reaper-cleanup")
+
+        # Plant a project dir like coda_interactive would have done.
+        project_dir = os.path.join(str(tmp_path), ".coda", "projects", sid)
+        os.makedirs(project_dir, exist_ok=True)
+        with open(os.path.join(project_dir, "SENTINEL"), "w") as f:
+            f.write("present")
+        assert os.path.exists(project_dir)
+
+        # Simulate the reaper's code path: call terminate_session directly.
+        sess = sessions[sid]
+        terminate_session(sid, sess["pid"], sess["master_fd"])
+        sid = None  # session terminated; finally is a no-op
+
+        # Project dir must be removed even though we bypassed mcp_close_pty_session.
+        assert not os.path.exists(project_dir), \
+            "Reaper path must also clean up the project dir — fix terminate_session not mcp_close_pty_session"
+    finally:
+        if sid is not None:
+            try:
+                mcp_close_pty_session(sid)
+            except Exception:
+                pass
