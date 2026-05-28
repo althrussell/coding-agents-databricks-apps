@@ -1494,7 +1494,6 @@ def mcp_create_pty_session(
                 "transcript_fh": transcript_fh,
                 "transcript_bytes": 0,
                 "replay_only": replay_only,
-                "env": shell_env,        # exposed for env-strip test
             }
 
         thread = threading.Thread(

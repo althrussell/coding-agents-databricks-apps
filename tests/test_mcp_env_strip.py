@@ -1,44 +1,58 @@
-"""Tests for env-stripping consistency between MCP and HTTP PTY creation paths."""
-import os
+"""Tests for _build_terminal_shell_env's credential-stripping behavior.
+
+Replaces the inline 5-key strip that mcp_create_pty_session used to do.
+Both create_session (HTTP path) and mcp_create_pty_session (MCP path)
+now call this helper, so it must strip both the original 5 keys and
+the registry-credential patterns the HTTP path was already covering.
+"""
 import pytest
 
-try:
-    import pty as _pty
-    _master, _slave = _pty.openpty()
-    os.close(_master)
-    os.close(_slave)
-    _PTY_AVAILABLE = True
-except Exception:
-    _PTY_AVAILABLE = False
-
-_pty_skip = pytest.mark.skipif(
-    not _PTY_AVAILABLE,
-    reason="PTY not allocatable in this environment",
-)
+from app import _build_terminal_shell_env
 
 
-@_pty_skip
-def test_mcp_create_pty_session_strips_registry_credentials(monkeypatch):
-    """mcp_create_pty_session must strip NPM_TOKEN, UV_DEFAULT_INDEX, UV_INDEX_*_PASSWORD,
-    UV_INDEX_*_USERNAME, and npm_config_//* from the child shell's environment —
-    matching the HTTP create_session path. Today, these leak into MCP-created PTYs.
+# Keys that must be absent from the child shell's env after the strip.
+STRIPPED_KEYS = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION",
+    "DATABRICKS_TOKEN",
+    "DATABRICKS_HOST",
+    "GEMINI_API_KEY",
+    "NPM_TOKEN",
+    "UV_DEFAULT_INDEX",
+    "UV_INDEX_MYREG_PASSWORD",
+    "UV_INDEX_MYREG_USERNAME",
+    "npm_config_//registry.example/:_authToken",
+]
+
+
+@pytest.mark.parametrize("key", STRIPPED_KEYS)
+def test_build_terminal_shell_env_strips_credential_key(key):
+    """Each known credential / registry-auth key is stripped from the child env."""
+    fake_env = {
+        "PATH": "/usr/bin:/usr/local/bin",  # positive control — must survive
+        "HOME": "/home/test",
+        key: "leak-me-test-value",
+    }
+    result = _build_terminal_shell_env(fake_env)
+    assert key not in result, (
+        f"{key} survived the strip — registry/auth credential leaked into "
+        f"the child shell's env. Result keys: {sorted(result)}"
+    )
+
+
+def test_build_terminal_shell_env_preserves_benign_keys():
+    """Positive control: non-credential keys survive the strip.
+
+    Guards against a future regression where the strip becomes too aggressive
+    and wipes the env entirely. If THIS test fails, the negative assertions
+    above would silently pass for the wrong reason.
     """
-    from app import mcp_create_pty_session, mcp_close_pty_session, sessions
-
-    # Plant registry-credential env vars before creating the PTY.
-    monkeypatch.setenv("NPM_TOKEN", "leak-me-npm")
-    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://leaked-index.example/")
-    monkeypatch.setenv("UV_INDEX_MYREG_PASSWORD", "leak-me-uv-pw")
-    monkeypatch.setenv("UV_INDEX_MYREG_USERNAME", "leak-me-uv-user")
-    monkeypatch.setenv("npm_config_//registry.example/:_authToken", "leak-me-npm-cfg")
-
-    sid = mcp_create_pty_session(label="t-env-strip")
-    try:
-        env = sessions[sid].get("env", {})
-        assert "NPM_TOKEN" not in env, f"NPM_TOKEN leaked into MCP PTY: keys={list(env)}"
-        assert "UV_DEFAULT_INDEX" not in env, "UV_DEFAULT_INDEX leaked"
-        assert "UV_INDEX_MYREG_PASSWORD" not in env, "UV_INDEX_*_PASSWORD leaked"
-        assert "UV_INDEX_MYREG_USERNAME" not in env, "UV_INDEX_*_USERNAME leaked"
-        assert not any(k.startswith("npm_config_//") for k in env), "npm_config_// keys leaked"
-    finally:
-        mcp_close_pty_session(sid)
+    fake_env = {
+        "PATH": "/usr/bin:/usr/local/bin",
+        "HOME": "/home/test",
+        "LANG": "en_US.UTF-8",
+    }
+    result = _build_terminal_shell_env(fake_env)
+    assert result.get("PATH") and "/usr/bin" in result["PATH"]
+    assert result.get("HOME") == "/home/test"
+    assert result.get("LANG") == "en_US.UTF-8"
