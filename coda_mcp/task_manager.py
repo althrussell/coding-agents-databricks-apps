@@ -536,7 +536,7 @@ def find_task_dir_by_pty_session(pty_session_id: str) -> str | None:
 
     Invariant: CoDA MCP sessions are ephemeral — one task per session. If the
     lifecycle ever changes to allow multiple tasks per session, this function
-    must be revisited to pick the active or grace-period task rather than
+    must be revisited to pick the in-progress task rather than
     ``completed_tasks[-1]``.
     """
     now = time.time()
