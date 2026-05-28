@@ -13,6 +13,14 @@ async def _no_wait(*a, **kw):
     return None
 
 
+def _make_dir_status():
+    """Build a mock object_type=DIRECTORY response from workspace.get_status."""
+    from unittest.mock import MagicMock
+    status = MagicMock()
+    status.object_type = "DIRECTORY"
+    return status
+
+
 def test_coda_interactive_unknown_agent_returns_error():
     """An agent value not in the allow-list returns status=error and lists allowed values."""
     from coda_mcp import mcp_server
@@ -39,74 +47,6 @@ def test_coda_interactive_default_agent_is_claude():
     assert sig.parameters["agent"].default == "claude"
 
 
-def test_coda_interactive_workspace_path_not_found(monkeypatch):
-    """If repos.list() returns no match for workspace_path, status=error."""
-    from unittest.mock import MagicMock
-    from coda_mcp import mcp_server
-
-    fake_client = MagicMock()
-    fake_client.repos.list.return_value = []   # no Git Folder at that path
-
-    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
-
-    result_str = asyncio.run(mcp_server.coda_interactive(
-        prompt="hello",
-        workspace_path="/Workspace/Users/x/nonexistent",
-    ))
-    result = json.loads(result_str)
-    assert result["status"] == "error"
-    assert "No Git Folder found" in result["error"]
-
-
-def test_coda_interactive_branch_update_failure(monkeypatch):
-    """If repos.update() raises, return error and don't proceed to PTY."""
-    from unittest.mock import MagicMock
-    from coda_mcp import mcp_server
-
-    fake_repo = MagicMock()
-    fake_repo.id = 123
-    fake_repo.path = "/Workspace/Users/x/proj"
-
-    fake_client = MagicMock()
-    fake_client.repos.list.return_value = [fake_repo]
-    fake_client.repos.update.side_effect = Exception("404 branch not found: nonexistent")
-
-    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
-
-    result_str = asyncio.run(mcp_server.coda_interactive(
-        prompt="hello",
-        workspace_path="/Workspace/Users/x/proj",
-        branch="nonexistent",
-    ))
-    result = json.loads(result_str)
-    assert result["status"] == "error"
-    assert "branch" in result["error"].lower() or "404" in result["error"]
-
-
-def test_coda_interactive_skips_branch_update_when_empty(monkeypatch):
-    """If branch is empty, repos.update() must NOT be called."""
-    from unittest.mock import MagicMock
-    from coda_mcp import mcp_server
-
-    fake_repo = MagicMock()
-    fake_repo.id = 123
-    fake_repo.path = "/Workspace/Users/x/proj"
-
-    fake_client = MagicMock()
-    fake_client.repos.list.return_value = [fake_repo]
-
-    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
-
-    # We don't expect a successful return yet (export+PTY not wired); we just
-    # verify that repos.update was not called.
-    asyncio.run(mcp_server.coda_interactive(
-        prompt="hello",
-        workspace_path="/Workspace/Users/x/proj",
-        branch="",
-    ))
-    fake_client.repos.update.assert_not_called()
-
-
 def test_coda_interactive_export_failure_cleans_partial_dir(monkeypatch, tmp_path):
     """If export raises mid-way, the partial project dir is removed and the PTY is closed."""
     from unittest.mock import MagicMock
@@ -114,11 +54,8 @@ def test_coda_interactive_export_failure_cleans_partial_dir(monkeypatch, tmp_pat
 
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    fake_repo = MagicMock()
-    fake_repo.id = 123
-    fake_repo.path = "/Workspace/Users/x/proj"
     fake_client = MagicMock()
-    fake_client.repos.list.return_value = [fake_repo]
+    fake_client.workspace.get_status.return_value = _make_dir_status()
     monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
 
     # PTY-creation hook returns a deterministic id we can predict.
@@ -168,11 +105,8 @@ def test_coda_interactive_happy_path_sends_agent_command_and_prompt(monkeypatch,
 
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    fake_repo = MagicMock()
-    fake_repo.id = 123
-    fake_repo.path = "/Workspace/Users/x/proj"
     fake_client = MagicMock()
-    fake_client.repos.list.return_value = [fake_repo]
+    fake_client.workspace.get_status.return_value = _make_dir_status()
     monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
 
     monkeypatch.setattr(
@@ -237,9 +171,8 @@ def test_coda_interactive_agent_command_matrix(monkeypatch, tmp_path):
     for agent, expected_cmd in expected.items():
         monkeypatch.setenv("HOME", str(tmp_path / agent))
 
-        fake_repo = MagicMock(); fake_repo.id = 1; fake_repo.path = "/W/x/p"
         fake_client = MagicMock()
-        fake_client.repos.list.return_value = [fake_repo]
+        fake_client.workspace.get_status.return_value = _make_dir_status()
         monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
         monkeypatch.setattr(
             mcp_server, "export_workspace_tree",
@@ -281,9 +214,8 @@ def test_coda_interactive_does_not_use_blocking_sleep(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    fake_repo = MagicMock(); fake_repo.id = 1; fake_repo.path = "/W/x/p"
     fake_client = MagicMock()
-    fake_client.repos.list.return_value = [fake_repo]
+    fake_client.workspace.get_status.return_value = _make_dir_status()
     monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
     monkeypatch.setattr(
         mcp_server, "export_workspace_tree",
@@ -382,3 +314,70 @@ def test_wait_for_agent_ready_returns_when_session_gone(monkeypatch):
 
     # Should return well under MAX_WAIT (within one poll cycle).
     assert elapsed < 0.5, f"Helper took {elapsed:.2f}s — should return immediately when session is gone"
+
+
+def test_coda_interactive_workspace_path_does_not_exist(monkeypatch):
+    """If workspace.get_status raises, return error and don't proceed to PTY."""
+    from unittest.mock import MagicMock
+    from coda_mcp import mcp_server
+
+    fake_client = MagicMock()
+    fake_client.workspace.get_status.side_effect = Exception("RESOURCE_DOES_NOT_EXIST")
+    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
+
+    pty_created = []
+    monkeypatch.setattr(
+        mcp_server, "_app_create_session",
+        lambda **kw: pty_created.append(kw) or "should-not-be-used",
+    )
+
+    result_str = asyncio.run(mcp_server.coda_interactive(
+        prompt="hello",
+        workspace_path="/Workspace/Users/x/nonexistent",
+    ))
+    result = json.loads(result_str)
+
+    assert result["status"] == "error"
+    assert "not found" in result["error"].lower() or "does_not_exist" in result["error"].lower()
+    # No PTY may be created if validation fails.
+    assert pty_created == [], f"PTY must not be created when workspace_path is invalid; got {pty_created}"
+
+
+def test_coda_interactive_workspace_path_not_directory(monkeypatch):
+    """If workspace.get_status returns object_type=FILE (or anything not DIRECTORY), return error."""
+    from unittest.mock import MagicMock
+    from coda_mcp import mcp_server
+
+    file_status = MagicMock()
+    file_status.object_type = "FILE"
+    fake_client = MagicMock()
+    fake_client.workspace.get_status.return_value = file_status
+    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
+
+    pty_created = []
+    monkeypatch.setattr(
+        mcp_server, "_app_create_session",
+        lambda **kw: pty_created.append(kw) or "should-not-be-used",
+    )
+
+    result_str = asyncio.run(mcp_server.coda_interactive(
+        prompt="hello",
+        workspace_path="/Workspace/Users/x/some-file.py",
+    ))
+    result = json.loads(result_str)
+
+    assert result["status"] == "error"
+    assert "directory" in result["error"].lower()
+    assert pty_created == [], "PTY must not be created when workspace_path is not a directory"
+
+
+def test_coda_interactive_no_branch_parameter():
+    """The branch parameter must not exist on coda_interactive's signature."""
+    import inspect
+    from coda_mcp import mcp_server
+
+    sig = inspect.signature(mcp_server.coda_interactive)
+    assert "branch" not in sig.parameters, (
+        f"coda_interactive must not accept a `branch` parameter (got {list(sig.parameters)}). "
+        f"The broadened contract handles git-folder branch state on the caller side."
+    )
