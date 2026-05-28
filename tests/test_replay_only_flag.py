@@ -1,4 +1,5 @@
 """Tests for the replay_only flag on PTY sessions."""
+import inspect
 import pytest
 
 # Reuse the PTY-availability guard pattern from the suite.
@@ -122,25 +123,31 @@ def test_coda_run_creates_pty_with_replay_only_true(tmp_path, monkeypatch):
             mcp_close_pty_session(pty_id)
 
 
-@_pty_skip
-def test_no_grace_key_in_coda_run_session_dict():
-    """Regression guard: coda_run-created PTYs must not have a 'grace' key,
-    and mcp_create_pty_session must not accept a 'grace' kwarg.
+def test_mcp_create_pty_session_signature_has_no_grace_param():
+    """Regression guard: mcp_create_pty_session must not accept a 'grace' kwarg.
 
-    Protects against accidental re-introduction of grace-period machinery
-    in future changes.
+    Pure signature introspection — no PTY needed, runs unconditionally so
+    that no-PTY environments (CI, sandboxed runners) still catch regressions.
     """
-    import inspect
-    from app import mcp_create_pty_session, mcp_close_pty_session, sessions
+    from app import mcp_create_pty_session
 
-    # The function signature must not include 'grace'.
     sig = inspect.signature(mcp_create_pty_session)
     assert "grace" not in sig.parameters, (
         f"mcp_create_pty_session should not accept a 'grace' parameter "
         f"(found in signature: {list(sig.parameters)})"
     )
 
-    # And the session dict must not contain a 'grace' key.
+
+@_pty_skip
+def test_no_grace_key_in_session_dict():
+    """Regression guard: session dicts from mcp_create_pty_session must not
+    contain a 'grace' key.
+
+    Protects against accidental re-introduction of grace-period machinery
+    in future changes. PTY-gated because it actually allocates one.
+    """
+    from app import mcp_create_pty_session, mcp_close_pty_session, sessions
+
     sid = mcp_create_pty_session(label="t-no-grace", replay_only=True)
     try:
         assert "grace" not in sessions[sid], (
