@@ -1399,7 +1399,11 @@ def create_session():
 # ── MCP Integration Helpers ──────────────────────────────────────────
 
 
-def mcp_create_pty_session(label: str = "hermes-mcp", transcript_path: str | None = None) -> str:
+def mcp_create_pty_session(
+    label: str = "hermes-mcp",
+    transcript_path: str | None = None,
+    replay_only: bool = False,
+) -> str:
     """Create a PTY session for MCP use. Returns the PTY session_id."""
     with sessions_lock:
         active = sum(1 for s in sessions.values() if not s.get("grace"))
@@ -1475,6 +1479,7 @@ def mcp_create_pty_session(label: str = "hermes-mcp", transcript_path: str | Non
                 "transcript_fh": transcript_fh,
                 "transcript_bytes": 0,
                 "grace": False,
+                "replay_only": replay_only,
             }
 
         thread = threading.Thread(
