@@ -29,12 +29,12 @@ def test_initialize_returns_server_info(client):
     assert "capabilities" in body["result"]
 
 
-def test_tools_list_returns_three_v2_tools(client):
+def test_tools_list_returns_v2_tools(client):
     r = client.post("/mcp", json=_rpc("tools/list", {}, rpc_id=2))
     assert r.status_code == 200
     tools = r.get_json()["result"]["tools"]
     names = {t["name"] for t in tools}
-    assert names == {"coda_run", "coda_inbox", "coda_get_result"}, (
+    assert names == {"coda_run", "coda_inbox", "coda_get_result", "coda_interactive"}, (
         f"Tool surface drifted from the v2 contract (docs/mcp-v2-background-execution.md). Got: {names}"
     )
 

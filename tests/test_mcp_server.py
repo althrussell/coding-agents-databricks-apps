@@ -41,19 +41,19 @@ def _parse(result: str) -> dict:
 
 
 class TestToolRegistration:
-    def test_three_tools_registered(self):
+    def test_tools_registered(self):
         from coda_mcp import mcp_server
 
         tool_mgr = mcp_server.mcp._tool_manager
         tool_names = set(tool_mgr._tools.keys())
-        expected = {"coda_run", "coda_inbox", "coda_get_result"}
+        expected = {"coda_run", "coda_inbox", "coda_get_result", "coda_interactive"}
         assert expected == tool_names, f"Expected {expected}, got {tool_names}"
 
-    def test_tool_count_is_three(self):
+    def test_tool_count(self):
         from coda_mcp import mcp_server
 
         tool_mgr = mcp_server.mcp._tool_manager
-        assert len(tool_mgr._tools) == 3
+        assert len(tool_mgr._tools) == 4
 
 
 # ── coda_run ─────────────────────────────────────────────────────────

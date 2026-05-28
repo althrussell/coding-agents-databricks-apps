@@ -287,6 +287,52 @@ async def coda_run(
         return json.dumps({"status": "error", "error": str(exc)})
 
 
+_ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+    ),
+)
+async def coda_interactive(
+    prompt: str,
+    workspace_path: str,
+    branch: str = "",
+    agent: str = "claude",
+    email: str = "",
+) -> str:
+    """Launch an interactive agent session in CoDA, handed off via a viewer URL.
+
+    The MCP caller passes a Databricks Workspace Git Folder path; Coda exports
+    its file tree, launches the chosen agent (claude default) in that directory,
+    auto-types ``prompt`` as the first user input, and returns a ``viewer_url``
+    the calling user opens in a browser to drive the session.
+
+    Pre-condition: ``workspace_path`` must be a Databricks Workspace Git Folder
+    and any in-progress changes must have been committed and pushed to its
+    remote before this call. The export reflects the committed HEAD state.
+
+    Interactive sessions do NOT appear in ``coda_inbox`` and ``coda_get_result``
+    will not return anything for them. The viewer URL is the only handle.
+
+    Allowed agents: claude (default), hermes, codex, gemini, opencode.
+    """
+    if agent not in _ALLOWED_AGENTS:
+        return json.dumps({
+            "status": "error",
+            "error": f"Unknown agent: {agent!r}. Allowed: {sorted(_ALLOWED_AGENTS)}",
+        })
+
+    # TODO(Task 6+): workspace lookup, branch update, export, PTY launch.
+    return json.dumps({
+        "status": "error",
+        "error": "Not yet implemented (stub).",
+    })
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         readOnlyHint=True,
