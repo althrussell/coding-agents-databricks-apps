@@ -1303,7 +1303,8 @@ def create_session():
     """Create a new terminal session."""
     # Quick reject before forking a PTY (approximate — authoritative check below)
     with sessions_lock:
-        if len(sessions) >= MAX_CONCURRENT_SESSIONS:
+        active = sum(1 for s in sessions.values() if not s.get("grace"))
+        if active >= MAX_CONCURRENT_SESSIONS:
             return jsonify({"error": f"Maximum {MAX_CONCURRENT_SESSIONS} concurrent sessions reached. Close an existing session first."}), 429
 
     data = request.get_json(silent=True) or {}
@@ -1342,7 +1343,8 @@ def create_session():
         with sessions_lock:
             # Authoritative check under the same lock as insertion — prevents
             # TOCTOU race where two concurrent requests both pass the early check.
-            if len(sessions) >= MAX_CONCURRENT_SESSIONS:
+            active = sum(1 for s in sessions.values() if not s.get("grace"))
+            if active >= MAX_CONCURRENT_SESSIONS:
                 os.close(master_fd)
                 try:
                     os.kill(pid, signal.SIGKILL)
@@ -1377,7 +1379,8 @@ def create_session():
 def mcp_create_pty_session(label: str = "hermes-mcp", transcript_path: str | None = None) -> str:
     """Create a PTY session for MCP use. Returns the PTY session_id."""
     with sessions_lock:
-        if len(sessions) >= MAX_CONCURRENT_SESSIONS:
+        active = sum(1 for s in sessions.values() if not s.get("grace"))
+        if active >= MAX_CONCURRENT_SESSIONS:
             raise RuntimeError(
                 f"Maximum {MAX_CONCURRENT_SESSIONS} concurrent sessions reached."
             )
@@ -1427,7 +1430,8 @@ def mcp_create_pty_session(label: str = "hermes-mcp", transcript_path: str | Non
 
     try:
         with sessions_lock:
-            if len(sessions) >= MAX_CONCURRENT_SESSIONS:
+            active = sum(1 for s in sessions.values() if not s.get("grace"))
+            if active >= MAX_CONCURRENT_SESSIONS:
                 os.close(master_fd)
                 try:
                     os.kill(pid, signal.SIGKILL)
@@ -1483,6 +1487,37 @@ def mcp_close_pty_session(session_id: str):
     if not session:
         return
     terminate_session(session_id, session["pid"], session["master_fd"])
+
+
+def _mark_grace_for_session(session_id: str) -> None:
+    """Mark a PTY session as 'in grace period' so it doesn't count toward
+    MAX_CONCURRENT_SESSIONS. Called by ``_watch_task`` immediately before
+    scheduling the deferred close Timer.
+
+    No-op if the session does not exist (e.g., already torn down).
+    """
+    with sessions_lock:
+        sess = sessions.get(session_id)
+    if sess is None:
+        return
+    with sess["lock"]:
+        sess["grace"] = True
+
+
+def _bump_session_last_poll(session_id: str, delta_s: float) -> None:
+    """Advance ``last_poll_time`` by ``delta_s`` so the idle reaper can't
+    preempt the Timer's deferred close. Defensive: at the current 24h
+    SESSION_TIMEOUT_SECONDS the reaper would never win anyway, but a future
+    tuning shouldn't break the grace window.
+
+    No-op if the session does not exist.
+    """
+    with sessions_lock:
+        sess = sessions.get(session_id)
+    if sess is None:
+        return
+    with sess["lock"]:
+        sess["last_poll_time"] = time.time() + delta_s
 
 
 @app.route("/api/input", methods=["POST"])

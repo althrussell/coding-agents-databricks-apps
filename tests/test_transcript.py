@@ -129,3 +129,48 @@ def test_terminate_session_closes_transcript_handle(tmp_path, monkeypatch):
     assert fh.closed
     # Session removed from dict
     assert sid not in sessions
+
+
+@_pty_skip
+def test_grace_period_pty_does_not_count_toward_max(monkeypatch):
+    monkeypatch.setattr("app.MAX_CONCURRENT_SESSIONS", 2)
+    from app import mcp_create_pty_session, mcp_close_pty_session, sessions, _mark_grace_for_session
+
+    sid1 = mcp_create_pty_session(label="t1")
+    sid2 = mcp_create_pty_session(label="t2")
+    try:
+        # At cap. A third creation should raise.
+        with pytest.raises(RuntimeError, match="Maximum"):
+            mcp_create_pty_session(label="t3")
+        # Mark one as grace; now we should have headroom.
+        _mark_grace_for_session(sid1)
+        assert sessions[sid1]["grace"] is True
+        sid3 = mcp_create_pty_session(label="t3")
+        mcp_close_pty_session(sid3)
+    finally:
+        for s in [sid1, sid2]:
+            try: mcp_close_pty_session(s)
+            except Exception: pass
+
+
+@_pty_skip
+def test_bump_session_last_poll_advances_clock(monkeypatch):
+    monkeypatch.setattr("app.MAX_CONCURRENT_SESSIONS", 5)
+    from app import mcp_create_pty_session, mcp_close_pty_session, sessions, _bump_session_last_poll
+    sid = mcp_create_pty_session(label="t")
+    try:
+        baseline = sessions[sid]["last_poll_time"]
+        _bump_session_last_poll(sid, 300)
+        assert sessions[sid]["last_poll_time"] >= baseline + 299
+    finally:
+        mcp_close_pty_session(sid)
+
+
+def test_mark_grace_on_missing_session_is_noop():
+    from app import _mark_grace_for_session
+    _mark_grace_for_session("nonexistent-pty-id")  # must not raise
+
+
+def test_bump_session_last_poll_missing_is_noop():
+    from app import _bump_session_last_poll
+    _bump_session_last_poll("nonexistent-pty-id", 100)  # must not raise
