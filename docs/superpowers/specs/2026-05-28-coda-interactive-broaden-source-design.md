@@ -105,7 +105,9 @@ The paragraph in `coda_mcp/mcp_server.py:79` surfaced to upstream LLM callers is
 > The user's project must be a Databricks Workspace Git Folder ... commit and push any local working changes back to the Git Folder's remote before calling.
 
 **After:**
-> The user's project must be a directory in the Databricks Workspace (a Git Folder or a plain Workspace folder — either works). Make sure the files you want the agent to see are present at `workspace_path` before calling. If the directory is a Git Folder, ensure the desired branch is checked out and pushed first — the export is a server-side snapshot.
+> The tool reads files from a directory that already exists in the Databricks Workspace (a Git Folder or a plain Workspace folder — either works). If your working files are not yet in the Workspace, upload them first (`workspace.import` via the Databricks SDK, REST, or CLI) into a folder the user can read, then pass that folder as `workspace_path`. The tool does NOT accept inline file payloads. If the directory is a Git Folder, ensure the desired branch is checked out and pushed first — the export is a server-side snapshot.
+
+**Why the upload-then-handoff guidance is explicit:** The full workflow this tool enables is *upstream client generates / collects working files → uploads them to a Workspace folder → calls `coda_interactive` with that folder → the user opens the viewer URL and continues live in CoDA*. The instructions string needs to make the upload step visible to the calling LLM; otherwise it might assume `coda_interactive` accepts a file payload or that the user has already wired up the Workspace folder by hand.
 
 ## What does NOT change
 

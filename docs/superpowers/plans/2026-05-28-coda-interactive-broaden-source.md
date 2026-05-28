@@ -421,6 +421,18 @@ def test_interactive_handoff_instructions_describe_broadened_contract():
         or "plain workspace folder" in lowered
         or "plain folder" in lowered
     ), "Instructions must mention that plain Workspace folders are accepted."
+
+    # Must surface the upload-then-handoff pattern so upstream callers know
+    # to push files into the workspace BEFORE calling.
+    assert (
+        "upload" in lowered
+        or "workspace.import" in lowered
+        or "post" in lowered
+    ), (
+        "Instructions must tell the upstream caller to upload/import the project "
+        "files into the Workspace first if they aren't already there — the tool "
+        "only reads existing Workspace paths, it doesn't accept inline payloads."
+    )
 ```
 
 Run: `uv run pytest tests/test_coda_interactive.py::test_interactive_handoff_instructions_describe_broadened_contract -v`
@@ -454,23 +466,25 @@ Replace it with:
 ```python
         "INTERACTIVE HANDOFF (coda_interactive): When the user wants a human to "
         "drive a coding agent in CoDA — not autonomous execution — call "
-        "coda_interactive instead of coda_run. The user's project must be a "
-        "directory in the Databricks Workspace (a Git Folder or a plain "
-        "Workspace folder — either works); make sure the files you want the "
-        "agent to see are present at workspace_path before calling. If the "
-        "directory is a Git Folder, ensure the desired branch is checked out "
-        "and pushed first — the export is a server-side snapshot. The tool "
-        "exports the directory into a Coda-local directory, launches the "
-        "chosen agent (claude default; also hermes, codex, gemini, opencode), "
-        "and types the prompt as the first user input. The return shape "
-        "includes a viewer_url the user opens to attach — share it "
-        "immediately in plain text; it is the only handle to the session, "
-        "and the user drives it until they exit. Interactive sessions do "
-        "NOT appear in coda_inbox, and coda_get_result returns nothing for "
-        "them — do not try to poll or fetch results. Note that git history "
-        "is NOT available inside the session (files-only export); if the "
-        "user needs history context, include a git log summary in the "
-        "prompt string."
+        "coda_interactive instead of coda_run. The tool reads files from a "
+        "directory that already exists in the Databricks Workspace (a Git "
+        "Folder or a plain Workspace folder — either works). If your working "
+        "files are not yet in the Workspace, upload them first (workspace.import "
+        "via the Databricks SDK, REST, or CLI — any of these) into a folder "
+        "the user can read, then pass that folder as workspace_path. The tool "
+        "does NOT accept inline file payloads. If the directory is a Git "
+        "Folder, ensure the desired branch is checked out and pushed first — "
+        "the export is a server-side snapshot. The tool exports the directory "
+        "into a Coda-local working directory, launches the chosen agent "
+        "(claude default; also hermes, codex, gemini, opencode), and types "
+        "the prompt as the first user input. The return shape includes a "
+        "viewer_url the user opens to attach — share it immediately in plain "
+        "text; it is the only handle to the session, and the user drives it "
+        "until they exit. Interactive sessions do NOT appear in coda_inbox, "
+        "and coda_get_result returns nothing for them — do not try to poll "
+        "or fetch results. Note that git history is NOT available inside the "
+        "session (files-only export); if the user needs history context, "
+        "include a git log summary in the prompt string."
 ```
 
 - [ ] **Step 3: Run the pinned-instructions test plus full suite**
