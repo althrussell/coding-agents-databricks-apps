@@ -26,6 +26,11 @@ from mcp.types import ToolAnnotations
 from coda_mcp import task_manager
 from coda_mcp import url_builder
 
+try:
+    from databricks.sdk import WorkspaceClient
+except ImportError:
+    WorkspaceClient = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 # ── FastMCP instance ────────────────────────────────────────────────
@@ -326,7 +331,41 @@ async def coda_interactive(
             "error": f"Unknown agent: {agent!r}. Allowed: {sorted(_ALLOWED_AGENTS)}",
         })
 
-    # TODO(Task 6+): workspace lookup, branch update, export, PTY launch.
+    # Resolve the Git Folder by listing under the workspace_path prefix.
+    if WorkspaceClient is None:
+        return json.dumps({
+            "status": "error",
+            "error": "databricks-sdk not installed",
+        })
+
+    client = WorkspaceClient()
+
+    try:
+        repos = list(client.repos.list(path_prefix=workspace_path))
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "error": f"Failed to list Git Folders: {e}",
+        })
+
+    repo = next((r for r in repos if r.path == workspace_path), None)
+    if repo is None:
+        return json.dumps({
+            "status": "error",
+            "error": f"No Git Folder found at {workspace_path}",
+        })
+
+    # Optional branch update.
+    if branch:
+        try:
+            client.repos.update(repo_id=repo.id, branch=branch)
+        except Exception as e:
+            return json.dumps({
+                "status": "error",
+                "error": f"Failed to update Git Folder to branch {branch!r}: {e}",
+            })
+
+    # TODO(Task 7): export tree, create PTY, launch agent.
     return json.dumps({
         "status": "error",
         "error": "Not yet implemented (stub).",
