@@ -82,42 +82,56 @@ New optional kwarg. When provided:
 
 ### 4.3 `app.py::read_pty_output` (additive)
 
-After the existing `os.write` into the in-memory buffer and Socket.IO emit, if `session["transcript_fh"]` is set:
+After the existing buffer append and Socket.IO emit, if a transcript handle is present, write under the per-session lock to prevent races against `terminate_session` (which may close the handle from the Timer thread):
 
 ```python
-fh = session["transcript_fh"]
-written = session.get("transcript_bytes", 0)
-remaining = TRANSCRIPT_CAP_BYTES - written
-if remaining > 0:
-    chunk = output[:remaining]
-    try:
-        fh.write(chunk)
-        fh.flush()
-        session["transcript_bytes"] = written + len(chunk)
-        if len(chunk) < len(output):
-            fh.write(b"\n[transcript truncated at 10MB]\n")
-            fh.flush()
-            fh.close()
-            session["transcript_fh"] = None
-    except OSError as exc:
-        logger.warning("transcript write failed for %s: %s", session_id, exc)
-        try: fh.close()
-        except Exception: pass
-        session["transcript_fh"] = None
+with session_lock:
+    fh = session.get("transcript_fh")
+    written = session.get("transcript_bytes", 0)
+    if fh is not None:
+        remaining = TRANSCRIPT_CAP_BYTES - written
+        if remaining > 0:
+            chunk = output[:remaining]
+            try:
+                fh.write(chunk)
+                fh.flush()
+                session["transcript_bytes"] = written + len(chunk)
+                if len(chunk) < len(output):
+                    fh.write(b"\n[transcript truncated at 10MB]\n")
+                    fh.flush()
+                    fh.close()
+                    session["transcript_fh"] = None
+            except (OSError, ValueError) as exc:
+                logger.warning("transcript write failed for %s: %s", session_id, exc)
+                try: fh.close()
+                except Exception: pass
+                session["transcript_fh"] = None
 ```
 
 `TRANSCRIPT_CAP_BYTES = 10 * 1024 * 1024`.
 
+**Invariants** (documented for future maintainers):
+
+- `transcript_fh` is opened in `mcp_create_pty_session`, written exclusively by `read_pty_output`, and closed by either (a) `read_pty_output` on cap/error or (b) `terminate_session` on PTY teardown. All three sites operate under `session["lock"]`.
+- `transcript_bytes` is incremented only by `read_pty_output`. Single-writer; reads from other threads must hold `session["lock"]`.
+- `ValueError` is caught alongside `OSError` to defend against a tiny window where `terminate_session` closes the handle between the spec's `if fh is not None` check and the actual `fh.write` call — the lock prevents this, but the catch is belt-and-suspenders.
+
 ### 4.4 `app.py::terminate_session` (additive)
 
-Close the transcript file handle if present, before the existing fd close:
+Close the transcript file handle under the per-session lock before the existing fd close. The swap-to-`None` is the synchronization point that lets `read_pty_output` notice the handle is gone on its next iteration:
 
 ```python
-fh = session.get("transcript_fh") if session else None
-if fh:
-    try: fh.close()
-    except Exception: pass
+sess = sessions.get(session_id)
+if sess is not None:
+    with sess["lock"]:
+        fh = sess.get("transcript_fh")
+        sess["transcript_fh"] = None  # swap first, then close
+    if fh is not None:
+        try: fh.close()
+        except Exception: pass
 ```
+
+(The actual close happens outside the lock to avoid holding it across a potential blocking I/O on a slow filesystem.)
 
 ### 4.5 `app.py::MAX_CONCURRENT_SESSIONS` check (modified)
 
@@ -210,7 +224,9 @@ def build_viewer_url(pty_session_id: str) -> Optional[str]:
 
 ### 4.9 `coda_mcp/mcp_asgi.py` (additive middleware)
 
-Insert a small ASGI middleware *before* CORS that extracts `X-Forwarded-Host` (fallback: `Host`) from every HTTP request and calls `url_builder.capture_from_headers(host)`. Both MCP requests AND inbound browser HTTP requests refresh the cache.
+Insert a small ASGI middleware on `mcp_starlette` (via `mcp_starlette.add_middleware(...)`) that extracts `X-Forwarded-Host` (fallback: `Host`) from every HTTP request and calls `url_builder.capture_from_headers(host)`. Both MCP requests AND inbound browser HTTP requests refresh the cache.
+
+**Coverage caveat** (not a problem in practice): the top-level ASGI app is `socketio.ASGIApp(sio, other_asgi_app=mcp_starlette)`, so `/socket.io/` traffic is intercepted by socketio *before* it reaches `mcp_starlette` and therefore never hits this middleware. This is fine because (a) the user always loads the SPA via plain HTTP first (which refreshes the cache), and (b) every `coda_run` MCP call is a plain HTTP POST to `/mcp` (also through the middleware). The cache is hot by the time any tool needs the URL.
 
 ```python
 class AppUrlCaptureMiddleware:
@@ -261,6 +277,8 @@ def find_task_dir_by_pty_session(pty_session_id: str) -> str | None:
 
 TTL handles the rename/close case without manual invalidation.
 
+**Invariant**: CoDA MCP sessions are ephemeral — one task per session (see `task_manager.create_session` then `complete_task` which sets `current_task=None` and appends to `completed_tasks`). This function therefore returns the right task dir for the lifetime of the URL. If the lifecycle ever changes to allow task reuse within a single session, this function must be revisited to pick the *active or grace-period* task rather than `completed_tasks[-1]`.
+
 ### 4.11 `app.py::attach_session` endpoint (additive)
 
 After the existing `_get_session()` lookup, add a fallback:
@@ -286,19 +304,40 @@ if not sess or sess.get("exited"):
     return jsonify({"error": "Session not found or exited"}), 404
 ```
 
-The output array shape matches the existing live path (the SPA already iterates `data.output`).
+The response shape (`output: [str]`, `replay: true|absent`, plus existing keys) is **NOT** consumed by the existing `_doAttach` — that function deliberately ignores `data.output` and forces a SIGWINCH redraw of the live application (`static/index.html:1339-1357`, comment at line 1347: "We skip buffer replay because it contains raw escape sequences that produce garbled output"). The replay-mode response is consumed by a new SPA function `_doReplay` described in §4.12, which writes the bytes directly into xterm.
 
-### 4.12 `static/index.html` (~30-50 LoC)
+### 4.12 `static/index.html` (~50-70 LoC)
 
-Three additions, all near the existing session-picker logic:
+Four additions:
 
-1. **On boot**, before showing the picker, check `new URLSearchParams(location.search).get("session")`. If present:
-    - Call `POST /api/session/attach` with that id.
-    - On 200 with `replay: true` → render bytes into a new xterm pane, set a "(replay)" badge on the tab, do NOT `socket.emit('join_session', ...)`.
-    - On 200 without `replay` → take the existing live-attach path (`_doAttach` + `join_session`).
-    - On 404 → render a small fallback page with "session expired or never existed" + link back to `/`.
-2. **Replay rendering** — same `term.write(bytes)` as live, but skip every subscription. Show a static banner at the top of the pane: "Task completed — viewing replay". No input handler attached.
-3. **History/URL hygiene** — when the user closes the attached pane, `history.replaceState` to drop the `?session=` query so a refresh doesn't re-attach to a stale id.
+1. **Boot-time URL parse** — before the existing session-picker fetch, check `new URLSearchParams(location.search).get("session")`. If absent → existing flow. If present → call `POST /api/session/attach` once and branch on the response:
+    - 200 with `replay: true` → call **`_doReplay`** (new, described below). Skip `_doAttach`. Do NOT emit `join_session`. Do NOT wire `terminal_input` to the WS.
+    - 200 without `replay` → call the existing `_doAttach(term, sessionId)` and the existing `socket.emit('join_session', { session_id })` path. (Reusing `_doAttach` is correct here because the *live* PTY is running an interactive app, and SIGWINCH-redraw is the right behavior.)
+    - 404 → render a small in-page fallback: "session expired or never existed" + a button to navigate to `/`.
+
+2. **`_doReplay(term, sessionId, bytes)` — new function** that handles static replay rendering. Cannot route through `_doAttach` because `_doAttach` discards `data.output` (it relies on a running app to redraw via SIGWINCH; replay mode has no running app). Implementation:
+
+    ```js
+    async function _doReplay(term, sessionId, content) {
+      // Chunk the write to avoid main-thread jank on multi-MB transcripts.
+      // xterm.js write() is internally batched, but a single 10MB call
+      // still blocks until the parser drains. 64KB slices with rAF gives
+      // the browser a chance to repaint between chunks.
+      const CHUNK = 64 * 1024;
+      for (let i = 0; i < content.length; i += CHUNK) {
+        term.write(content.slice(i, i + CHUNK));
+        await new Promise(r => requestAnimationFrame(r));
+      }
+      // Mount a small "Task completed — viewing replay" banner above the pane.
+      // No input handler, no WS subscription, no heartbeat for this session id.
+    }
+    ```
+
+3. **Replay-mode pane behavior** — the tab gets a "(replay)" badge. The xterm input handler is not wired. The session is NOT included in the heartbeat session_ids list (the PTY is dead; heartbeats would 404 the lookup).
+
+4. **History/URL hygiene** — when the user closes a pane that was opened via `?session=`, call `history.replaceState({}, '', '/')` so a refresh doesn't re-attach.
+
+**Estimate revised**: 50-70 LoC including the new `_doReplay` and the 404 fallback. Architecturally the most "real" change in the spec — the rest of the codebase shifts are mostly additive.
 
 ### 4.13 MCP tool `instructions` update (`coda_mcp/mcp_server.py`)
 
@@ -398,10 +437,10 @@ At T+0 hermes writes `result.json`. `_watch_task` calls `task_manager.complete_t
 | `coda_mcp/url_builder.py` (new) | ~25 | Low |
 | `coda_mcp/mcp_asgi.py` (middleware) | ~15 | Low |
 | `coda_mcp/task_manager.py` (new lookup) | ~30 | Low |
-| `static/index.html` | ~50 | Medium — touches UI boot path |
+| `static/index.html` | ~50-70 | Medium — new boot branch + new `_doReplay` rendering path; live attach still reuses `_doAttach` |
 | Tests | ~250 | — |
 
-**Total**: ~220 LoC of production code + ~250 LoC of tests.
+**Total**: ~235-255 LoC of production code + ~250 LoC of tests.
 
 ## 11. Next step
 
