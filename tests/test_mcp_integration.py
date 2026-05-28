@@ -349,6 +349,13 @@ def test_end_to_end_grace_and_replay(tmp_path, monkeypatch):
         _bump_session_last_poll,
     )
 
+    # Initialize cleanup-referenced names BEFORE the try so an early failure
+    # (e.g., coda_run or _read_session raising) doesn't shadow the original
+    # exception with an UnboundLocalError in the finally block.
+    pty_id = None
+    sess_id = None
+    task_id = None
+
     try:
         # --- Step 1: Submit a fake task ------------------------------------------
         result_json = asyncio.run(mcp_server.coda_run(
@@ -413,7 +420,7 @@ def test_end_to_end_grace_and_replay(tmp_path, monkeypatch):
             close_session_fn=MagicMock(),
         )
         # Best-effort PTY cleanup if the test failed before the Timer fired.
-        if pty_id in sessions:
+        if pty_id and pty_id in sessions:
             try:
                 mcp_close_pty_session(pty_id)
             except Exception:
