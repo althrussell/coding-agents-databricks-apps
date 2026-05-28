@@ -35,6 +35,11 @@ MAX_CONCURRENT_TASKS = int(os.environ.get("CODA_MAX_CONCURRENT", "5"))
 
 TASK_TTL_S = int(os.environ.get("CODA_TASK_TTL", str(24 * 3600)))  # 24h
 
+# ── PTY → task-dir reverse lookup (used by attach_session replay fallback) ──
+
+_pty_lookup_cache: dict[str, tuple[str, float]] = {}  # pty_id -> (task_dir, ts)
+_PTY_LOOKUP_TTL = 60.0  # seconds
+
 # ── Exceptions ───────────────────────────────────────────────────────
 
 
@@ -507,6 +512,53 @@ def count_running_tasks() -> int:
         except (OSError, json.JSONDecodeError):
             continue
     return count
+
+
+# ── PTY → task-dir reverse lookup ──────────────────────────────────
+
+
+def find_task_dir_by_pty_session(pty_session_id: str) -> str | None:
+    """Find the task dir whose session.json carries this pty_session_id.
+
+    Returns the path to the active task dir, or — if the session has completed —
+    the most recently completed task dir. Returns None on no match.
+
+    Cached for ``_PTY_LOOKUP_TTL`` seconds to avoid disk scans on every browser
+    refresh.
+
+    Invariant: CoDA MCP sessions are ephemeral — one task per session. If the
+    lifecycle ever changes to allow multiple tasks per session, this function
+    must be revisited to pick the active or grace-period task rather than
+    ``completed_tasks[-1]``.
+    """
+    now = time.time()
+    cached = _pty_lookup_cache.get(pty_session_id)
+    if cached and (now - cached[1]) < _PTY_LOOKUP_TTL:
+        return cached[0]
+
+    if not os.path.isdir(SESSIONS_DIR):
+        return None
+
+    for sess_name in os.listdir(SESSIONS_DIR):
+        sess_file = os.path.join(SESSIONS_DIR, sess_name, "session.json")
+        try:
+            with open(sess_file) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        if data.get("pty_session_id") != pty_session_id:
+            continue
+
+        candidate = data.get("current_task") or (
+            data["completed_tasks"][-1] if data.get("completed_tasks") else None
+        )
+        if candidate:
+            tdir = os.path.join(SESSIONS_DIR, sess_name, "tasks", candidate)
+            _pty_lookup_cache[pty_session_id] = (tdir, now)
+            return tdir
+
+    return None
 
 
 # ── Cleanup expired sessions ────────────────────────────────────────

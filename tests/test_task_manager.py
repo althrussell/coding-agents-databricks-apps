@@ -446,3 +446,96 @@ class TestEdgeCases:
             f.write("{bad json")
         with pytest.raises(task_manager.SessionNotFoundError):
             task_manager._read_session(sid)
+
+
+# ── find_task_dir_by_pty_session ─────────────────────────────────────
+
+
+@pytest.fixture
+def sessions_root(tmp_path, monkeypatch):
+    from coda_mcp import task_manager
+    monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
+    # Reset the lookup cache between tests
+    task_manager._pty_lookup_cache.clear()
+    return tmp_path
+
+
+def _make_session_dir(root, sess_id, pty_id, current_task=None, completed=None):
+    sdir = root / sess_id
+    (sdir / "tasks").mkdir(parents=True)
+    data = {
+        "session_id": sess_id,
+        "pty_session_id": pty_id,
+        "current_task": current_task,
+        "completed_tasks": completed or [],
+        "status": "ready",
+    }
+    (sdir / "session.json").write_text(json.dumps(data))
+    return sdir
+
+
+def test_find_task_dir_hits_current_task(sessions_root):
+    from coda_mcp import task_manager
+
+    _make_session_dir(sessions_root, "sess-A", "pty-1", current_task="task-X")
+    result = task_manager.find_task_dir_by_pty_session("pty-1")
+    assert result == str(sessions_root / "sess-A" / "tasks" / "task-X")
+
+
+def test_find_task_dir_falls_back_to_last_completed(sessions_root):
+    from coda_mcp import task_manager
+
+    _make_session_dir(
+        sessions_root, "sess-A", "pty-1",
+        current_task=None,
+        completed=["task-old", "task-recent"],
+    )
+    result = task_manager.find_task_dir_by_pty_session("pty-1")
+    assert result == str(sessions_root / "sess-A" / "tasks" / "task-recent")
+
+
+def test_find_task_dir_returns_none_when_no_match(sessions_root):
+    from coda_mcp import task_manager
+
+    _make_session_dir(sessions_root, "sess-A", "pty-1", current_task="task-X")
+    assert task_manager.find_task_dir_by_pty_session("pty-NONEXIST") is None
+
+
+def test_find_task_dir_ignores_corrupt_session_json(sessions_root):
+    from coda_mcp import task_manager
+
+    sdir = sessions_root / "sess-bad"
+    sdir.mkdir()
+    (sdir / "session.json").write_text("not json {{{")
+    _make_session_dir(sessions_root, "sess-good", "pty-1", current_task="task-X")
+    assert task_manager.find_task_dir_by_pty_session("pty-1") == \
+        str(sessions_root / "sess-good" / "tasks" / "task-X")
+
+
+def test_find_task_dir_cache_hits_within_ttl(sessions_root):
+    from coda_mcp import task_manager
+
+    _make_session_dir(sessions_root, "sess-A", "pty-1", current_task="task-X")
+    task_manager.find_task_dir_by_pty_session("pty-1")
+    # Remove session.json — cache should still return the hit
+    (sessions_root / "sess-A" / "session.json").unlink()
+    assert task_manager.find_task_dir_by_pty_session("pty-1") == \
+        str(sessions_root / "sess-A" / "tasks" / "task-X")
+
+
+def test_find_task_dir_cache_expires(sessions_root, monkeypatch):
+    from coda_mcp import task_manager
+
+    monkeypatch.setattr(task_manager, "_PTY_LOOKUP_TTL", 0.01)
+    _make_session_dir(sessions_root, "sess-A", "pty-1", current_task="task-X")
+    task_manager.find_task_dir_by_pty_session("pty-1")
+    (sessions_root / "sess-A" / "session.json").unlink()
+    time.sleep(0.02)
+    assert task_manager.find_task_dir_by_pty_session("pty-1") is None
+
+
+def test_find_task_dir_no_sessions_dir(sessions_root, monkeypatch):
+    from coda_mcp import task_manager
+
+    monkeypatch.setattr(task_manager, "SESSIONS_DIR", "/nonexistent/path/that/does/not/exist")
+    assert task_manager.find_task_dir_by_pty_session("pty-1") is None
