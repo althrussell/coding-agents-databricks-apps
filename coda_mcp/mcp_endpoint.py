@@ -25,6 +25,7 @@ from coda_mcp.mcp_server import (
     coda_run,
     coda_inbox,
     coda_get_result,
+    coda_interactive,
 )
 
 # Tool function dispatch
@@ -32,6 +33,7 @@ _TOOL_DISPATCH = {
     "coda_run": coda_run,
     "coda_inbox": coda_inbox,
     "coda_get_result": coda_get_result,
+    "coda_interactive": coda_interactive,
 }
 
 SERVER_INFO = {
