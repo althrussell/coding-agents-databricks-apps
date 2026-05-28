@@ -423,7 +423,6 @@ def test_interactive_handoff_instructions_describe_broadened_contract():
     assert (
         "upload" in lowered
         or "workspace.import" in lowered
-        or "post" in lowered
     ), (
         "Instructions must tell the upstream caller to upload/import the project "
         "files into the Workspace first if they aren't already there — the tool "
