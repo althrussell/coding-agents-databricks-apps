@@ -114,7 +114,10 @@ class TestCodaRun:
 
         data = _parse(result)
         assert data["status"] == "running"
-        mock_create.assert_called_once_with(label="hermes-mcp")
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args.kwargs
+        assert call_kwargs["label"] == "hermes-mcp"
+        assert "transcript_path" in call_kwargs
         mock_send.assert_called_once()
         assert "hermes" in mock_send.call_args[0][1]
 
@@ -408,3 +411,98 @@ def test_watch_task_schedules_timer_on_completion(tmp_path, monkeypatch):
     # _mark_grace and _bump_session_last_poll should have been called
     mark.assert_called_once_with("pty-abc")
     bump.assert_called_once_with("pty-abc", 0.05)
+
+
+# ── viewer_url + transcript_path wiring ─────────────────────────────
+
+
+import asyncio
+import json
+import os
+from unittest import mock
+
+from coda_mcp import mcp_server, task_manager, url_builder
+
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro) if not asyncio.iscoroutine(coro) else asyncio.run(coro)
+
+
+def test_coda_run_includes_viewer_url_when_builder_returns_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(url_builder, "_app_url_cache", "app.example.com")
+
+    create = mock.MagicMock(return_value="pty-abc")
+    send = mock.MagicMock()
+    closer = mock.MagicMock()
+    mcp_server.set_app_hooks(create, send, closer, mock.MagicMock(), mock.MagicMock())
+
+    result_json = asyncio.run(mcp_server.coda_run(prompt="do it", email="u@x"))
+    result = json.loads(result_json)
+    assert result["status"] == "running"
+    assert "?session=pty-abc" in result["viewer_url"]
+    assert result["viewer_url"].startswith("https://app.example.com")
+
+
+def test_coda_run_omits_viewer_url_when_builder_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(url_builder, "_app_url_cache", None)
+    monkeypatch.delenv("CODA_APP_URL", raising=False)
+
+    create = mock.MagicMock(return_value="pty-abc")
+    mcp_server.set_app_hooks(create, mock.MagicMock(), mock.MagicMock(), mock.MagicMock(), mock.MagicMock())
+
+    result_json = asyncio.run(mcp_server.coda_run(prompt="do it", email="u@x"))
+    result = json.loads(result_json)
+    # viewer_url present but None when builder returns None
+    assert result.get("viewer_url") is None
+
+
+def test_coda_run_passes_transcript_path_to_create_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
+    create = mock.MagicMock(return_value="pty-abc")
+    mcp_server.set_app_hooks(create, mock.MagicMock(), mock.MagicMock(), mock.MagicMock(), mock.MagicMock())
+
+    asyncio.run(mcp_server.coda_run(prompt="do it", email="u@x"))
+    # create_session was called with transcript_path=... pointing into ~/.coda/sessions/<sess>/tasks/<task>/transcript.log
+    kwargs = create.call_args.kwargs
+    assert "transcript_path" in kwargs
+    assert kwargs["transcript_path"].endswith("transcript.log")
+    assert "tasks" in kwargs["transcript_path"]
+
+
+def test_coda_inbox_decorates_each_task_with_viewer_url(tmp_path, monkeypatch):
+    monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(url_builder, "_app_url_cache", "app.example.com")
+
+    # Seed one session with one task and a pty_session_id
+    s = task_manager.create_session("u@x", "uid", label="t")
+    sid = s["session_id"]
+    task_manager._update_session_field(sid, "pty_session_id", "pty-xyz")
+    task_manager.create_task(sid, "prompt", "u@x")
+
+    result_json = asyncio.run(mcp_server.coda_inbox())
+    result = json.loads(result_json)
+    assert len(result["tasks"]) == 1
+    assert "viewer_url" in result["tasks"][0]
+    assert "?session=pty-xyz" in result["tasks"][0]["viewer_url"]
+
+
+def test_coda_get_result_includes_viewer_url(tmp_path, monkeypatch):
+    monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(url_builder, "_app_url_cache", "app.example.com")
+
+    s = task_manager.create_session("u@x", "uid", label="t")
+    sid = s["session_id"]
+    task_manager._update_session_field(sid, "pty_session_id", "pty-xyz")
+    t = task_manager.create_task(sid, "prompt", "u@x")
+    tid = t["task_id"]
+    tdir = task_manager._task_dir(sid, tid)
+    task_manager._write_json(tdir + "/result.json", {
+        "status": "completed", "summary": "ok",
+    })
+
+    result_json = asyncio.run(mcp_server.coda_get_result(tid, sid))
+    result = json.loads(result_json)
+    assert "viewer_url" in result
+    assert "?session=pty-xyz" in result["viewer_url"]

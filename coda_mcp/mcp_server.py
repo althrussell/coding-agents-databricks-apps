@@ -24,6 +24,7 @@ from mcp.server.fastmcp.server import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from coda_mcp import task_manager
+from coda_mcp import url_builder
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,12 @@ mcp = FastMCP(
         "3) coda_inbox — ONLY when user asks. Shows all tasks from last 24h.\n"
         "4) coda_get_result — for completed tasks, get full structured output.\n\n"
         "CHAINING: pass previous_session_id from a completed task's session_id "
-        "to give the new task context of what was done before."
+        "to give the new task context of what was done before.\n\n"
+        "SHARE THE LIVE URL: When coda_run returns a viewer_url field (non-null), "
+        "mention it to the user in plain text (e.g. \"you can watch progress at "
+        "<url>\"). The URL is safe to share — it points to the same Databricks App "
+        "the user is already authenticated against. Do this on the first mention "
+        "of the task and any time the user asks where the task is or how to see it."
     ),
     stateless_http=True,
     json_response=True,
@@ -256,14 +262,7 @@ async def coda_run(
         session_result = task_manager.create_session(email, "", label="hermes-mcp")
         session_id = session_result["session_id"]
 
-        # Create PTY if hooks are wired
-        if _app_create_session is not None:
-            pty_session_id = _app_create_session(label="hermes-mcp")
-            task_manager._update_session_field(
-                session_id, "pty_session_id", pty_session_id
-            )
-
-        # Create task with chaining support
+        # Create task first (we need task_id to compute transcript_path).
         result = task_manager.create_task(
             session_id=session_id,
             prompt=prompt,
@@ -275,33 +274,43 @@ async def coda_run(
         )
         task_id = result["task_id"]
 
+        pty_session_id = None
+        if _app_create_session is not None:
+            transcript_path = os.path.join(
+                task_manager._task_dir(session_id, task_id),
+                "transcript.log",
+            )
+            pty_session_id = _app_create_session(
+                label="hermes-mcp",
+                transcript_path=transcript_path,
+            )
+            task_manager._update_session_field(
+                session_id, "pty_session_id", pty_session_id
+            )
+
         # Send to PTY if hooks are wired
-        if _app_send_input is not None:
-            session = task_manager._read_session(session_id)
-            pty_session_id = session.get("pty_session_id")
-            if pty_session_id:
-                # Build hermes command
-                tdir = task_manager._task_dir(session_id, task_id)
-                prompt_path = os.path.join(tdir, "prompt.txt")
-                cmd = f'hermes -z "{prompt_path}"'
-                if permissions == "yolo":
-                    cmd += " --yolo"
-                cmd += "\n"
+        if _app_send_input is not None and pty_session_id is not None:
+            tdir = task_manager._task_dir(session_id, task_id)
+            prompt_path = os.path.join(tdir, "prompt.txt")
+            cmd = f'hermes -z "{prompt_path}"'
+            if permissions == "yolo":
+                cmd += " --yolo"
+            cmd += "\n"
+            _app_send_input(pty_session_id, cmd)
 
-                _app_send_input(pty_session_id, cmd)
-
-                # Start background watcher
-                t = threading.Thread(
-                    target=_watch_task,
-                    args=(session_id, task_id, timeout_s),
-                    daemon=True,
-                )
-                t.start()
+            # Start background watcher
+            t = threading.Thread(
+                target=_watch_task,
+                args=(session_id, task_id, timeout_s),
+                daemon=True,
+            )
+            t.start()
 
         return json.dumps({
             "task_id": task_id,
             "session_id": session_id,
             "status": "running",
+            "viewer_url": url_builder.build_viewer_url(pty_session_id) if pty_session_id else None,
         })
 
     except Exception as exc:
@@ -340,6 +349,14 @@ async def coda_inbox(
     """
     try:
         tasks = task_manager.list_all_tasks(email=email, status_filter=status)
+        # Decorate each task with its viewer URL (if available).
+        for t in tasks:
+            sess = task_manager._read_session_safe(t["session_id"])
+            pty = sess.get("pty_session_id") if sess else None
+            if pty:
+                vu = url_builder.build_viewer_url(pty)
+                if vu:
+                    t["viewer_url"] = vu
 
         counts = {"running": 0, "completed": 0, "failed": 0}
         for t in tasks:
@@ -395,6 +412,13 @@ async def coda_get_result(
         result.setdefault("files_changed", [])
         result.setdefault("artifacts", [])
         result.setdefault("errors", [])
+        # Decorate with viewer_url if known
+        sess = task_manager._read_session_safe(session_id)
+        pty = sess.get("pty_session_id") if sess else None
+        if pty:
+            vu = url_builder.build_viewer_url(pty)
+            if vu:
+                result["viewer_url"] = vu
         return json.dumps(result)
     except Exception as exc:
         return json.dumps({"status": "error", "task_id": task_id, "error": str(exc)})

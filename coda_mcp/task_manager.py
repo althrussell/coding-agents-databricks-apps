@@ -101,6 +101,14 @@ def _read_session(session_id: str) -> dict:
         raise SessionNotFoundError(f"Session {session_id} not found or corrupt")
 
 
+def _read_session_safe(session_id: str) -> dict | None:
+    """Read session.json, returning None on missing/corrupt instead of raising."""
+    try:
+        return _read_session(session_id)
+    except SessionNotFoundError:
+        return None
+
+
 def _update_session_field(session_id: str, key: str, value) -> None:
     """Update a single field in session.json (read-modify-write)."""
     data = _read_session(session_id)

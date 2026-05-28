@@ -35,7 +35,7 @@ def isolated_env(tmp_path):
     mock_send = MagicMock()
     mock_close = MagicMock()
     ms.set_app_hooks(
-        create_session_fn=lambda label: f"pty-mock-{label}",
+        create_session_fn=lambda label, **kwargs: f"pty-mock-{label}",
         send_input_fn=mock_send,
         close_session_fn=mock_close,
     )
