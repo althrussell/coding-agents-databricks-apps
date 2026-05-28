@@ -47,6 +47,7 @@ SESSION_TIMEOUT_SECONDS = 86400      # No poll for 24 hours = dead session
 CLEANUP_INTERVAL_SECONDS = 900       # Check for stale sessions every 15 min
 GRACEFUL_SHUTDOWN_WAIT = 3          # Seconds to wait after SIGHUP before SIGKILL
 MAX_CONCURRENT_SESSIONS = int(os.environ.get("MAX_CONCURRENT_SESSIONS", "5"))
+TRANSCRIPT_CAP_BYTES = 10 * 1024 * 1024  # 10 MB soft cap per transcript
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -858,6 +859,42 @@ def _get_session(session_id):
         return sessions.get(session_id)
 
 
+def _tee_transcript_chunk(session, output: bytes, cap: int = TRANSCRIPT_CAP_BYTES) -> None:
+    """Append PTY output to the transcript file. Single-writer (read_pty_output).
+
+    All file-handle access is under ``session["lock"]`` so we never race the
+    Timer-driven close path in ``terminate_session``. The ``ValueError`` catch
+    is belt-and-suspenders for the tiny window where the handle is closed
+    between the ``is not None`` check and the actual ``write`` call (the lock
+    prevents this, but be defensive).
+    """
+    with session["lock"]:
+        fh = session.get("transcript_fh")
+        written = session.get("transcript_bytes", 0)
+        if fh is None:
+            return
+        remaining = cap - written
+        if remaining <= 0:
+            return
+        chunk = output[:remaining]
+        try:
+            fh.write(chunk)
+            fh.flush()
+            session["transcript_bytes"] = written + len(chunk)
+            if len(chunk) < len(output):
+                fh.write(b"\n[transcript truncated at %d bytes]\n" % cap)
+                fh.flush()
+                fh.close()
+                session["transcript_fh"] = None
+        except (OSError, ValueError) as exc:
+            logger.warning("transcript write failed: %s", exc)
+            try:
+                fh.close()
+            except Exception:
+                pass
+            session["transcript_fh"] = None
+
+
 def read_pty_output(session_id, fd):
     """Background thread to read PTY output into buffer and push via WebSocket."""
     session = _get_session(session_id)
@@ -886,6 +923,8 @@ def read_pty_output(session_id, fd):
                 _emit_from_thread('terminal_output',
                                   {'session_id': session_id, 'output': decoded},
                                   room=session_id)
+                # Tee to transcript file if enabled for this session
+                _tee_transcript_chunk(session, output)
             else:
                 # select timed out — check if process is still alive
                 try:
