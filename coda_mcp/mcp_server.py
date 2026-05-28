@@ -16,6 +16,7 @@ Run standalone for testing::
 import json
 import logging
 import os
+import shlex
 import threading
 import time
 
@@ -25,6 +26,7 @@ from mcp.types import ToolAnnotations
 
 from coda_mcp import task_manager
 from coda_mcp import url_builder
+from coda_mcp.workspace_export import export_workspace_tree
 
 try:
     from databricks.sdk import WorkspaceClient
@@ -294,6 +296,16 @@ async def coda_run(
 
 _ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
 
+_PROMPT_SEED_DELAY_S = 2  # seconds to wait for agent to initialize before pasting prompt
+
+_AGENT_LAUNCH_CMDS = {
+    "claude": "claude",
+    "hermes": "hermes chat",
+    "codex": "codex",
+    "gemini": "gemini",
+    "opencode": "opencode",
+}
+
 
 @mcp.tool(
     annotations=ToolAnnotations(
@@ -365,11 +377,93 @@ async def coda_interactive(
                 "error": f"Failed to update Git Folder to branch {branch!r}: {e}",
             })
 
-    # TODO(Task 7): export tree, create PTY, launch agent.
-    return json.dumps({
-        "status": "error",
-        "error": "Not yet implemented (stub).",
-    })
+    # Create PTY FIRST so we have its session_id for the project_dir name.
+    if _app_create_session is None:
+        return json.dumps({
+            "status": "error",
+            "error": "PTY hook not wired",
+        })
+
+    pty_session_id = None
+    project_dir = None
+    try:
+        pty_session_id = _app_create_session(
+            label=f"{agent}-interactive",
+            replay_only=False,
+        )
+
+        # Build the project dir at the canonical path keyed by PTY id.
+        project_dir = os.path.join(
+            os.path.expanduser("~/.coda/projects"),
+            pty_session_id,
+        )
+
+        # Export the Workspace tree into project_dir.
+        try:
+            export_workspace_tree(client, workspace_path, project_dir)
+        except Exception as e:
+            # Close the PTY and clean up the partial dir.
+            if _app_close_session is not None:
+                try:
+                    _app_close_session(pty_session_id)
+                except Exception:
+                    pass
+            import shutil
+            if os.path.isdir(project_dir):
+                shutil.rmtree(project_dir, ignore_errors=True)
+            return json.dumps({
+                "status": "error",
+                "error": f"Failed to export workspace tree: {e}",
+            })
+
+        # cd into the project dir.
+        if _app_send_input is None:
+            return json.dumps({
+                "status": "error",
+                "error": "PTY send hook not wired",
+            })
+        _app_send_input(pty_session_id, f"cd {shlex.quote(project_dir)}\n")
+
+        # Launch the agent.
+        launch_cmd = _AGENT_LAUNCH_CMDS[agent]
+        _app_send_input(pty_session_id, launch_cmd + "\n")
+
+        # Wait briefly for agent initialization, then paste the prompt.
+        time.sleep(_PROMPT_SEED_DELAY_S)
+        _app_send_input(pty_session_id, prompt + "\n")
+
+        viewer_url = url_builder.build_viewer_url(pty_session_id)
+
+        return json.dumps({
+            "status": "launched",
+            "viewer_url": viewer_url,
+            "agent": agent,
+            "project_dir": project_dir,
+            "workspace_path": workspace_path,
+            "branch": branch,
+            "instructions": (
+                "Open viewer_url to attach. The agent is loaded with the "
+                "project files exported from Workspace and your kickoff "
+                "prompt typed. Type the agent's quit command (e.g. /quit) "
+                "and then `exit` to end the session. Note: git history is "
+                "NOT available in the session — files are an export, not "
+                "a clone."
+            ),
+        })
+    except Exception as e:
+        # Catch-all: ensure no resource leak.
+        if pty_session_id and _app_close_session is not None:
+            try:
+                _app_close_session(pty_session_id)
+            except Exception:
+                pass
+        if project_dir and os.path.isdir(project_dir):
+            import shutil
+            shutil.rmtree(project_dir, ignore_errors=True)
+        return json.dumps({
+            "status": "error",
+            "error": f"coda_interactive failed: {e}",
+        })
 
 
 @mcp.tool(

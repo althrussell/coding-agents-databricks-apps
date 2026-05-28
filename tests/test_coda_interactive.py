@@ -100,3 +100,165 @@ def test_coda_interactive_skips_branch_update_when_empty(monkeypatch):
         branch="",
     ))
     fake_client.repos.update.assert_not_called()
+
+
+def test_coda_interactive_export_failure_cleans_partial_dir(monkeypatch, tmp_path):
+    """If export raises mid-way, the partial project dir is removed and the PTY is closed."""
+    from unittest.mock import MagicMock
+    from coda_mcp import mcp_server
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    fake_repo = MagicMock()
+    fake_repo.id = 123
+    fake_repo.path = "/Workspace/Users/x/proj"
+    fake_client = MagicMock()
+    fake_client.repos.list.return_value = [fake_repo]
+    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
+
+    # PTY-creation hook returns a deterministic id we can predict.
+    monkeypatch.setattr(
+        mcp_server, "_app_create_session", lambda **kw: "pty-exportfail-id",
+    )
+
+    closed = []
+    monkeypatch.setattr(
+        mcp_server, "_app_close_session", lambda sid: closed.append(sid),
+    )
+
+    def fake_export(client, workspace_path, dest_dir):
+        # Create the dir + a partial file, then raise.
+        os.makedirs(dest_dir, exist_ok=True)
+        with open(os.path.join(dest_dir, "partial.txt"), "w") as f:
+            f.write("partial")
+        raise RuntimeError("simulated export failure")
+
+    monkeypatch.setattr(mcp_server, "export_workspace_tree", fake_export)
+
+    # send_input hook should NOT be called for export-failure path (we close before launch).
+    sent = []
+    monkeypatch.setattr(
+        mcp_server, "_app_send_input", lambda sid, payload: sent.append((sid, payload)),
+    )
+
+    result_str = asyncio.run(mcp_server.coda_interactive(
+        prompt="hello",
+        workspace_path="/Workspace/Users/x/proj",
+    ))
+    result = json.loads(result_str)
+
+    assert result["status"] == "error"
+    assert "export" in result["error"].lower()
+    # PTY was created — must be closed on failure.
+    assert "pty-exportfail-id" in closed, "PTY must be closed when export fails"
+    # Project dir cleaned up.
+    project_dir = tmp_path / ".coda" / "projects" / "pty-exportfail-id"
+    assert not project_dir.exists(), "Partial project dir must be removed after export failure"
+
+
+def test_coda_interactive_happy_path_sends_agent_command_and_prompt(monkeypatch, tmp_path):
+    """End-to-end mock: export succeeds, PTY created, cd + agent + prompt sent in order."""
+    from unittest.mock import MagicMock
+    from coda_mcp import mcp_server
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    fake_repo = MagicMock()
+    fake_repo.id = 123
+    fake_repo.path = "/Workspace/Users/x/proj"
+    fake_client = MagicMock()
+    fake_client.repos.list.return_value = [fake_repo]
+    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "export_workspace_tree",
+        lambda client, ws_path, dest_dir: os.makedirs(dest_dir, exist_ok=True),
+    )
+    monkeypatch.setattr(
+        mcp_server, "_app_create_session", lambda **kw: "pty-happy-id",
+    )
+
+    sent_to_pty = []
+    monkeypatch.setattr(
+        mcp_server,
+        "_app_send_input",
+        lambda sid, payload: sent_to_pty.append((sid, payload)),
+    )
+
+    # Stub the sleep so the test runs fast.
+    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_DELAY_S", 0)
+
+    monkeypatch.setattr(
+        mcp_server.url_builder,
+        "build_viewer_url",
+        lambda pty_id: f"https://test.example/?session={pty_id}",
+    )
+
+    result_str = asyncio.run(mcp_server.coda_interactive(
+        prompt="continue debugging the auth flow",
+        workspace_path="/Workspace/Users/x/proj",
+        agent="claude",
+    ))
+    result = json.loads(result_str)
+
+    assert result["status"] == "launched"
+    assert result["agent"] == "claude"
+    assert result["viewer_url"] == "https://test.example/?session=pty-happy-id"
+    assert result["project_dir"].endswith("/pty-happy-id")
+
+    # Three PTY writes, in order: cd, agent command, prompt.
+    assert len(sent_to_pty) == 3, f"Expected 3 PTY writes; got {sent_to_pty}"
+    assert sent_to_pty[0][0] == "pty-happy-id"
+    assert sent_to_pty[0][1].startswith("cd "), \
+        f"First write should be cd; got {sent_to_pty[0][1]!r}"
+    assert sent_to_pty[1] == ("pty-happy-id", "claude\n")
+    assert sent_to_pty[2] == ("pty-happy-id", "continue debugging the auth flow\n")
+
+
+def test_coda_interactive_agent_command_matrix(monkeypatch, tmp_path):
+    """Each allowed agent maps to its expected launch command."""
+    from unittest.mock import MagicMock
+    from coda_mcp import mcp_server
+
+    expected = {
+        "claude": "claude\n",
+        "hermes": "hermes chat\n",
+        "codex": "codex\n",
+        "gemini": "gemini\n",
+        "opencode": "opencode\n",
+    }
+
+    for agent, expected_cmd in expected.items():
+        monkeypatch.setenv("HOME", str(tmp_path / agent))
+
+        fake_repo = MagicMock(); fake_repo.id = 1; fake_repo.path = "/W/x/p"
+        fake_client = MagicMock()
+        fake_client.repos.list.return_value = [fake_repo]
+        monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
+        monkeypatch.setattr(
+            mcp_server, "export_workspace_tree",
+            lambda client, ws_path, dest_dir: os.makedirs(dest_dir, exist_ok=True),
+        )
+        monkeypatch.setattr(
+            mcp_server, "_app_create_session", lambda **kw: f"pty-{agent}",
+        )
+        sent = []
+        monkeypatch.setattr(
+            mcp_server, "_app_send_input", lambda sid, p: sent.append(p),
+        )
+        monkeypatch.setattr(mcp_server, "_PROMPT_SEED_DELAY_S", 0)
+        monkeypatch.setattr(
+            mcp_server.url_builder, "build_viewer_url",
+            lambda pty_id: f"https://test/?s={pty_id}",
+        )
+
+        result_str = asyncio.run(mcp_server.coda_interactive(
+            prompt="x", workspace_path="/W/x/p", agent=agent,
+        ))
+        result = json.loads(result_str)
+        assert result["status"] == "launched", f"agent {agent}: {result}"
+
+        # sent[0] is cd, sent[1] is the agent command, sent[2] is the prompt.
+        assert sent[1] == expected_cmd, \
+            f"agent {agent}: expected {expected_cmd!r}, got {sent[1]!r}"
