@@ -389,3 +389,43 @@ def test_coda_interactive_no_branch_parameter():
         f"coda_interactive must not accept a `branch` parameter (got {list(sig.parameters)}). "
         f"The broadened contract handles git-folder branch state on the caller side."
     )
+
+
+def test_interactive_handoff_instructions_describe_broadened_contract():
+    """The server-level INTERACTIVE HANDOFF paragraph must reflect the broadened contract."""
+    from coda_mcp import mcp_server
+
+    instructions = mcp_server.mcp.instructions
+
+    # Must mention coda_interactive.
+    assert "coda_interactive" in instructions
+
+    # Must NOT still claim a Git Folder is required.
+    lowered = instructions.lower()
+    assert "must be a databricks workspace git folder" not in lowered, (
+        "Instructions still require a Git Folder — broadened contract was not applied."
+    )
+    assert "commit and push" not in lowered, (
+        "Instructions still tell the caller to commit and push — only relevant for Git Folders, "
+        "but the broadened contract accepts plain folders too."
+    )
+
+    # Must mention that plain folders work.
+    # Either "git folder or" phrasing, or "plain workspace folder" — accept either.
+    assert (
+        "git folder or" in lowered
+        or "plain workspace folder" in lowered
+        or "plain folder" in lowered
+    ), "Instructions must mention that plain Workspace folders are accepted."
+
+    # Must surface the upload-then-handoff pattern so upstream callers know
+    # to push files into the workspace BEFORE calling.
+    assert (
+        "upload" in lowered
+        or "workspace.import" in lowered
+        or "post" in lowered
+    ), (
+        "Instructions must tell the upstream caller to upload/import the project "
+        "files into the Workspace first if they aren't already there — the tool "
+        "only reads existing Workspace paths, it doesn't accept inline payloads."
+    )
