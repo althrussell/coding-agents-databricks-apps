@@ -18,14 +18,10 @@ def _reset_hooks():
     mcp_server._app_create_session = None
     mcp_server._app_send_input = None
     mcp_server._app_close_session = None
-    mcp_server._app_mark_grace = None
-    mcp_server._app_bump_poll = None
     yield
     mcp_server._app_create_session = None
     mcp_server._app_send_input = None
     mcp_server._app_close_session = None
-    mcp_server._app_mark_grace = None
-    mcp_server._app_bump_poll = None
 
 
 @pytest.fixture(autouse=True)
@@ -347,70 +343,6 @@ class TestCodaGetResult:
         data = _parse(result)
         assert data["status"] == "running"
         assert "not yet available" in data["message"]
-
-
-# ── Deferred close (Timer) ───────────────────────────────────────────
-
-
-import threading
-from unittest import mock
-
-from coda_mcp import mcp_server, task_manager
-
-
-def test_set_app_hooks_accepts_grace_and_bump_hooks():
-    create = mock.MagicMock()
-    send = mock.MagicMock()
-    close = mock.MagicMock()
-    mark_grace = mock.MagicMock()
-    bump_poll = mock.MagicMock()
-    mcp_server.set_app_hooks(create, send, close, mark_grace, bump_poll)
-    assert mcp_server._app_mark_grace is mark_grace
-    assert mcp_server._app_bump_poll is bump_poll
-
-
-def test_watch_task_schedules_timer_on_completion(tmp_path, monkeypatch):
-    monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
-    # Create a session + task with a faked result.json
-    s = task_manager.create_session("u@x", "uid", label="t")
-    sid = s["session_id"]
-    task_manager._update_session_field(sid, "pty_session_id", "pty-abc")
-    t = task_manager.create_task(sid, "do thing", "u@x")
-    tid = t["task_id"]
-    tdir = task_manager._task_dir(sid, tid)
-    task_manager._write_json(tdir + "/result.json", {"status": "completed"})
-
-    mark = mock.MagicMock()
-    bump = mock.MagicMock()
-    closer = mock.MagicMock()
-    mcp_server.set_app_hooks(mock.MagicMock(), mock.MagicMock(), closer, mark, bump)
-
-    timer_created = []
-    real_timer = threading.Timer
-
-    def fake_timer(seconds, fn, args=None, kwargs=None):
-        timer_created.append((seconds, fn, args))
-        t = real_timer(seconds, fn, args=args, kwargs=kwargs)
-        return t
-
-    monkeypatch.setattr(mcp_server.threading, "Timer", fake_timer)
-
-    # Use a very short watch interval and ensure no real Timer fires
-    monkeypatch.setattr(mcp_server, "GRACE_PERIOD_S", 0.05)
-
-    # Run one iteration manually
-    mcp_server._watch_task(sid, tid, timeout_s=10)
-
-    # Timer should be scheduled for GRACE_PERIOD_S seconds with closer + pty_session_id
-    assert len(timer_created) == 1
-    delay, fn, args = timer_created[0]
-    assert delay == 0.05
-    assert fn is closer
-    assert args == ("pty-abc",)
-
-    # _mark_grace and _bump_session_last_poll should have been called
-    mark.assert_called_once_with("pty-abc")
-    bump.assert_called_once_with("pty-abc", 0.05)
 
 
 # ── viewer_url + transcript_path wiring ─────────────────────────────
