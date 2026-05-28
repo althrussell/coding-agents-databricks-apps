@@ -156,3 +156,42 @@ def test_no_grace_key_in_session_dict():
         )
     finally:
         mcp_close_pty_session(sid)
+
+
+@_pty_skip
+def test_coda_run_does_not_create_project_dir(tmp_path, monkeypatch):
+    """Regression guard: coda_run is Mode 3 (replay-only, no project dir).
+    Only coda_interactive (Mode 2) creates dirs under ~/.coda/projects/.
+
+    If a future change accidentally calls export_workspace_tree from
+    coda_run or otherwise creates a per-session project dir, this test fires.
+    """
+    import asyncio
+    import json
+    import os
+    from app import sessions, mcp_close_pty_session
+    from coda_mcp import mcp_server, task_manager
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    # Stop the watcher from racing the test.
+    monkeypatch.setattr(mcp_server, "_watch_task", lambda *a, **kw: None)
+
+    result_str = asyncio.run(mcp_server.coda_run(
+        prompt="ignored", email="t@example.com",
+    ))
+    result = json.loads(result_str)
+    pty_id = None
+    try:
+        sess = task_manager._read_session(result["session_id"])
+        pty_id = sess.get("pty_session_id")
+
+        # Project dir must NOT exist for coda_run.
+        projects_root = os.path.join(str(tmp_path), ".coda", "projects")
+        assert not os.path.isdir(projects_root) or not os.listdir(projects_root), (
+            f"coda_run unexpectedly created project dirs under {projects_root}: "
+            f"{os.listdir(projects_root) if os.path.isdir(projects_root) else 'n/a'}"
+        )
+    finally:
+        if pty_id is not None:
+            mcp_close_pty_session(pty_id)
