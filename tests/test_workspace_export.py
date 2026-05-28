@@ -113,3 +113,40 @@ def test_export_workspace_tree_empty_workspace(tmp_path):
 
     assert tmp_path.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_export_workspace_tree_skips_unknown_object_type(tmp_path, caplog):
+    """Unknown object types (e.g. REPO) are skipped with a warning."""
+    client = MagicMock()
+    client.workspace.list.return_value = [
+        _fake_object("/Workspace/Users/x/proj/something", "REPO"),
+    ]
+    with caplog.at_level("WARNING"):
+        export_workspace_tree(client, "/Workspace/Users/x/proj", str(tmp_path))
+    # No file should be written
+    assert list(tmp_path.iterdir()) == []
+    # And a warning should mention the unknown type
+    assert any("REPO" in record.getMessage() for record in caplog.records), \
+        f"Expected a log warning mentioning the unknown REPO type. Records: {[r.getMessage() for r in caplog.records]}"
+
+
+def test_export_workspace_tree_appends_extension_for_notebooks(tmp_path):
+    """Notebooks get language-based extension appended to the basename."""
+    client = MagicMock()
+    notebook_entry = MagicMock()
+    notebook_entry.path = "/Workspace/Users/x/proj/MyNotebook"
+    notebook_entry.object_type = "NOTEBOOK"
+    notebook_entry.language = "PYTHON"
+    client.workspace.list.return_value = [notebook_entry]
+
+    import base64
+    mock_export = MagicMock()
+    mock_export.content = base64.b64encode(b"# Databricks notebook source\nprint('hi')\n").decode("ascii")
+    client.workspace.export.return_value = mock_export
+
+    export_workspace_tree(client, "/Workspace/Users/x/proj", str(tmp_path))
+
+    # Should have appended .py extension
+    expected_path = tmp_path / "MyNotebook.py"
+    assert expected_path.exists(), \
+        f"Expected MyNotebook.py for Python notebook; got: {list(tmp_path.iterdir())}"
