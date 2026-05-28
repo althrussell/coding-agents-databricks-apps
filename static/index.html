@@ -1383,15 +1383,38 @@
     }
 
     function _renderExpiredPage(sessionId) {
-      const root = document.body;
-      root.innerHTML = `
-        <div style="font-family:monospace;padding:40px;text-align:center;color:#ccc;">
-          <h2>Session expired</h2>
-          <p>Session <code>${sessionId.replace(/[<>]/g, '')}</code> is gone, and no replay is available.</p>
-          <p>The transcript may have aged out after the 24-hour retention window.</p>
-          <p><a href="/" style="color:#6cf;">← Back to terminal</a></p>
-        </div>
-      `;
+      // Use DOM construction instead of innerHTML interpolation to prevent XSS
+      // via crafted ?session= values. textContent escapes everything.
+      document.body.innerHTML = '';  // clear
+
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'font-family:monospace;padding:40px;text-align:center;color:#ccc;';
+
+      const heading = document.createElement('h2');
+      heading.textContent = 'Session expired';
+      wrap.appendChild(heading);
+
+      const intro = document.createElement('p');
+      intro.appendChild(document.createTextNode('Session '));
+      const code = document.createElement('code');
+      code.textContent = sessionId;  // textContent escapes <>"'`&
+      intro.appendChild(code);
+      intro.appendChild(document.createTextNode(' is gone, and no replay is available.'));
+      wrap.appendChild(intro);
+
+      const explain = document.createElement('p');
+      explain.textContent = 'The transcript may have aged out after the 24-hour retention window.';
+      wrap.appendChild(explain);
+
+      const link = document.createElement('a');
+      link.href = '/';
+      link.style.color = '#6cf';
+      link.textContent = '← Back to terminal';
+      const linkPara = document.createElement('p');
+      linkPara.appendChild(link);
+      wrap.appendChild(linkPara);
+
+      document.body.appendChild(wrap);
     }
 
     async function _initFromQueryString() {

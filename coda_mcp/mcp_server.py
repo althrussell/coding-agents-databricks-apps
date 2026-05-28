@@ -164,8 +164,14 @@ def _watch_task(session_id: str, task_id: str, timeout_s: int) -> None:
                 return
 
 
-def _close_pty_for_session(session_id: str) -> None:
-    """Close the PTY associated with a session, if hooks are wired."""
+def _close_pty_immediately(session_id: str) -> None:
+    """Close the PTY associated with a session, skipping the grace window.
+
+    This bypasses the deferred-close grace period that production paths use
+    via ``_schedule_deferred_close``. Only use from emergency teardown or
+    tests; production watchers should prefer the deferred variant so users
+    have a window to deep-link in and view a final replay.
+    """
     if _app_close_session is None:
         return
     try:
@@ -181,7 +187,7 @@ def _schedule_deferred_close(session_id: str) -> None:
     """Mark the PTY as in-grace and schedule a delayed close.
 
     Both completion and timeout paths call this in place of the immediate
-    ``_close_pty_for_session``. The Timer is a daemon thread so it doesn't
+    ``_close_pty_immediately``. The Timer is a daemon thread so it doesn't
     block uvicorn shutdown.
     """
     if _app_close_session is None:
