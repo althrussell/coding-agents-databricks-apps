@@ -1356,6 +1356,91 @@
       return sessionId;
     }
 
+    // ── Deep-link helpers ─────────────────────────────────────────────
+
+    async function _doReplay(term, sessionId, content) {
+      // Chunk the write to avoid main-thread jank on multi-MB transcripts.
+      const CHUNK = 64 * 1024;
+      for (let i = 0; i < content.length; i += CHUNK) {
+        term.write(content.slice(i, i + CHUNK));
+        await new Promise(r => requestAnimationFrame(r));
+      }
+      // Mount a static banner above the pane.
+      _showReplayBanner(term, sessionId);
+      // NOTE: do NOT wire term.onData → terminal_input; do NOT include in heartbeat
+      // session_ids list; do NOT emit join_session.
+      return sessionId;
+    }
+
+    function _showReplayBanner(term, sessionId) {
+      const pane = getAllPanes().find(p => p.sessionId === sessionId);
+      if (!pane || !pane.element) return;
+      const banner = document.createElement('div');
+      banner.className = 'replay-banner';
+      banner.textContent = 'Task completed — viewing replay';
+      banner.style.cssText = 'padding:4px 8px;background:#333;color:#aaa;font-size:12px;text-align:center;';
+      pane.element.insertBefore(banner, pane.element.firstChild);
+    }
+
+    function _renderExpiredPage(sessionId) {
+      const root = document.body;
+      root.innerHTML = `
+        <div style="font-family:monospace;padding:40px;text-align:center;color:#ccc;">
+          <h2>Session expired</h2>
+          <p>Session <code>${sessionId.replace(/[<>]/g, '')}</code> is gone, and no replay is available.</p>
+          <p>The transcript may have aged out after the 24-hour retention window.</p>
+          <p><a href="/" style="color:#6cf;">← Back to terminal</a></p>
+        </div>
+      `;
+    }
+
+    async function _initFromQueryString() {
+      const params = new URLSearchParams(location.search);
+      const sessionId = params.get('session');
+      if (!sessionId) return false;
+
+      try {
+        const resp = await fetch('/api/session/attach', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId })
+        });
+
+        if (resp.status === 404) {
+          _renderExpiredPage(sessionId);
+          return true;  // handled, skip picker
+        }
+
+        const data = await resp.json();
+
+        // Create a tab that skips the session picker and uses our known session id.
+        const tab = await createTab({ deepLinkSessionId: sessionId });
+        if (!tab || tab.panes.length === 0) return false;
+        const pane = tab.panes[0];
+        const term = pane.term;
+
+        if (data.replay) {
+          const content = (data.output || []).join('');
+          // Stop polling for replay panes — they are static.
+          pollWorker.postMessage({ type: 'stop_poll', paneId: pane.id });
+          if (wsConnected && socket) {
+            socket.emit('leave_session', { session_id: sessionId });
+          }
+          await _doReplay(term, sessionId, content);
+        } else {
+          await _doAttach(term, sessionId);
+          if (typeof socket !== 'undefined' && socket) {
+            socket.emit('join_session', { session_id: sessionId });
+          }
+        }
+
+        return true;  // handled, skip picker
+      } catch (err) {
+        console.error('deep-link attach failed:', err);
+        return false;
+      }
+    }
+
     function _formatAge(timestamp) {
       const seconds = Math.floor((Date.now() / 1000) - timestamp);
       if (seconds < 60) return 'just now';
@@ -1675,6 +1760,10 @@
           await waitForSetup();
         }
         var { sid, reattached } = await getOrPromptSession(term, tab.label, opts.skipPrompt);
+      } else if (opts.deepLinkSessionId) {
+        // Deep-link boot — session id is already known; skip picker entirely.
+        var sid = opts.deepLinkSessionId;
+        var reattached = true;
       } else if (!opts.newSession) {
         // PAT is valid, initial page load — check for existing sessions first.
         const setupResp2 = await fetch('/api/setup-status');
@@ -1808,6 +1897,13 @@
         cleanupPane(p);
         p.term.dispose();
       });
+
+      // If the tab contained a deep-linked pane, drop ?session= from the URL.
+      const _ctParams = new URLSearchParams(location.search);
+      const _ctSid = _ctParams.get('session');
+      if (_ctSid && tab.panes.some(p => p.sessionId === _ctSid)) {
+        history.replaceState({}, '', '/');
+      }
 
       // Remove DOM
       tab.paneContainer.remove();
@@ -1962,7 +2058,17 @@
       const ap = tab.panes.find(p => p.id === tab.activePaneId) || tab.panes[0];
       if (!ap) return;
 
+      // Capture before cleanupPane() nulls pane.sessionId.
+      const _apSessionId = ap.sessionId;
       cleanupPane(ap);
+
+      // If this pane was opened via ?session=<id>, drop the query param so a
+      // refresh doesn't re-attach to a stale id.
+      const _cpParams = new URLSearchParams(location.search);
+      if (_apSessionId && _cpParams.get('session') === _apSessionId) {
+        history.replaceState({}, '', '/');
+      }
+
       ap.term.dispose();
       ap.element.remove();
 
@@ -2266,7 +2372,11 @@
         // The element is kept in the DOM for error reporting (see catch below).
         status.style.display = 'none';
 
-        await createTab();
+        // ── Deep-link: ?session=<pty_id> takes priority over the session picker ──
+        const deepLinkHandled = await _initFromQueryString();
+        if (!deepLinkHandled) {
+          await createTab();
+        }
         updateSessionBadge();
 
         let resizeTimer;
