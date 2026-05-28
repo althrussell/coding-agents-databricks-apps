@@ -130,7 +130,7 @@ def _watch_task(session_id: str, task_id: str, timeout_s: int) -> None:
         if result_path:
             try:
                 task_manager.complete_task(session_id, task_id)
-                _schedule_deferred_close(session_id)
+                _close_pty_immediately(session_id)
                 logger.info("Watcher: task %s completed (result found)", task_id)
             except Exception:
                 logger.exception("Watcher: error completing task %s", task_id)
@@ -157,7 +157,7 @@ def _watch_task(session_id: str, task_id: str, timeout_s: int) -> None:
                         "errors": [f"Timeout after {timeout_s}s with no activity for 5 min"],
                     })
                     task_manager.complete_task(session_id, task_id)
-                    _schedule_deferred_close(session_id)
+                    _close_pty_immediately(session_id)
                     logger.warning("Watcher: task %s timed out", task_id)
                 except Exception:
                     logger.exception("Watcher: error timing out task %s", task_id)
