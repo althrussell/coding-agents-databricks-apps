@@ -313,7 +313,43 @@ async def coda_run(
 
 _ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
 
-_PROMPT_SEED_DELAY_S = 2  # seconds to wait for agent to initialize before pasting prompt
+# Wait for the agent's TUI to settle by polling the PTY output buffer. Returns
+# as soon as the buffer length stays constant for _PROMPT_SEED_STABILITY_S, or
+# _PROMPT_SEED_MAX_WAIT_S elapses (whichever first). Replaces a brittle
+# hardcoded sleep that didn't adapt to slow agent cold-starts.
+_PROMPT_SEED_MAX_WAIT_S = 5.0
+_PROMPT_SEED_STABILITY_S = 1.0
+
+
+async def _wait_for_agent_ready(pty_session_id: str) -> None:
+    """Poll the PTY output buffer; return when the buffer stabilizes or max-wait elapses.
+
+    Stability = buffer length unchanged for ``_PROMPT_SEED_STABILITY_S`` seconds,
+    after at least one byte has appeared. If the session disappears mid-wait
+    (PTY died), return immediately.
+    """
+    from app import sessions
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + _PROMPT_SEED_MAX_WAIT_S
+    last_len = -1
+    stable_since: float | None = None
+    poll_interval = 0.1
+
+    while loop.time() < deadline:
+        await asyncio.sleep(poll_interval)
+        sess = sessions.get(pty_session_id)
+        if sess is None:
+            return
+        current_len = sum(len(chunk) for chunk in sess.get("output_buffer", []))
+        if current_len > 0 and current_len == last_len:
+            if stable_since is None:
+                stable_since = loop.time()
+            elif (loop.time() - stable_since) >= _PROMPT_SEED_STABILITY_S:
+                return
+        else:
+            stable_since = None
+            last_len = current_len
+
 
 _AGENT_LAUNCH_CMDS = {
     "claude": "claude",
@@ -445,7 +481,7 @@ async def coda_interactive(
         _app_send_input(pty_session_id, launch_cmd + "\n")
 
         # Wait briefly for agent initialization, then paste the prompt.
-        await asyncio.sleep(_PROMPT_SEED_DELAY_S)
+        await _wait_for_agent_ready(pty_session_id)
         _app_send_input(pty_session_id, prompt + "\n")
 
         viewer_url = url_builder.build_viewer_url(pty_session_id)

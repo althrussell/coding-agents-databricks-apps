@@ -186,8 +186,10 @@ def test_coda_interactive_happy_path_sends_agent_command_and_prompt(monkeypatch,
         lambda sid, payload: sent_to_pty.append((sid, payload)),
     )
 
-    # Stub the sleep so the test runs fast.
-    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_DELAY_S", 0)
+    # Stub the agent-ready wait so the test runs fast.
+    async def _no_wait(*a, **kw):
+        return
+    monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", _no_wait)
 
     monkeypatch.setattr(
         mcp_server.url_builder,
@@ -247,7 +249,9 @@ def test_coda_interactive_agent_command_matrix(monkeypatch, tmp_path):
         monkeypatch.setattr(
             mcp_server, "_app_send_input", lambda sid, p: sent.append(p),
         )
-        monkeypatch.setattr(mcp_server, "_PROMPT_SEED_DELAY_S", 0)
+        async def _no_wait(*a, **kw):
+            return
+        monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", _no_wait)
         monkeypatch.setattr(
             mcp_server.url_builder, "build_viewer_url",
             lambda pty_id: f"https://test/?s={pty_id}",
@@ -286,7 +290,9 @@ def test_coda_interactive_does_not_use_blocking_sleep(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(mcp_server, "_app_create_session", lambda **kw: "pty-noblock-id")
     monkeypatch.setattr(mcp_server, "_app_send_input", lambda *a, **k: None)
-    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_DELAY_S", 0)
+    async def _no_wait(*a, **kw):
+        return
+    monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", _no_wait)
     monkeypatch.setattr(
         mcp_server.url_builder, "build_viewer_url", lambda pty_id: f"https://t/?s={pty_id}",
     )
@@ -303,3 +309,78 @@ def test_coda_interactive_does_not_use_blocking_sleep(monkeypatch, tmp_path):
         f"coda_interactive called time.sleep({blocking_calls}); must use asyncio.sleep "
         f"instead so the event loop isn't blocked."
     )
+
+
+def test_wait_for_agent_ready_returns_when_buffer_stabilizes(monkeypatch):
+    """Helper returns once the output buffer has been stable for the configured window."""
+    import asyncio
+    from app import sessions
+    from coda_mcp import mcp_server
+
+    # Set up a fake session with a controllable output buffer.
+    sid = "pty-stabilize-test"
+    sessions[sid] = {"output_buffer": [b"banner line\n", b"prompt> "]}
+
+    # Shrink the stability window so the test runs fast.
+    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_STABILITY_S", 0.05)
+    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_MAX_WAIT_S", 2.0)
+
+    try:
+        start = asyncio.new_event_loop().time() if False else None  # dummy
+        # Buffer is already populated and won't change → helper should return quickly.
+        async def _run():
+            import time
+            t0 = time.time()
+            await mcp_server._wait_for_agent_ready(sid)
+            return time.time() - t0
+        elapsed = asyncio.run(_run())
+
+        # Should return roughly _PROMPT_SEED_STABILITY_S, definitely well under MAX_WAIT.
+        assert elapsed < 1.0, f"Helper took {elapsed:.2f}s — should have returned quickly when buffer is stable"
+    finally:
+        sessions.pop(sid, None)
+
+
+def test_wait_for_agent_ready_times_out_when_buffer_empty(monkeypatch):
+    """Helper returns at max-wait if the buffer never gets any content."""
+    import asyncio
+    from app import sessions
+    from coda_mcp import mcp_server
+
+    sid = "pty-empty-test"
+    sessions[sid] = {"output_buffer": []}
+
+    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_STABILITY_S", 0.05)
+    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_MAX_WAIT_S", 0.3)
+
+    try:
+        async def _run():
+            import time
+            t0 = time.time()
+            await mcp_server._wait_for_agent_ready(sid)
+            return time.time() - t0
+        elapsed = asyncio.run(_run())
+
+        # Should have hit max-wait since buffer never had content.
+        assert 0.25 <= elapsed <= 0.6, f"Expected ~0.3s max-wait timeout; got {elapsed:.2f}s"
+    finally:
+        sessions.pop(sid, None)
+
+
+def test_wait_for_agent_ready_returns_when_session_gone(monkeypatch):
+    """Helper returns immediately if the session is no longer in the sessions dict."""
+    import asyncio
+    from coda_mcp import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_STABILITY_S", 0.05)
+    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_MAX_WAIT_S", 5.0)
+
+    async def _run():
+        import time
+        t0 = time.time()
+        await mcp_server._wait_for_agent_ready("nonexistent-pty-id")
+        return time.time() - t0
+    elapsed = asyncio.run(_run())
+
+    # Should return well under MAX_WAIT (within one poll cycle).
+    assert elapsed < 0.5, f"Helper took {elapsed:.2f}s — should return immediately when session is gone"
