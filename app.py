@@ -1432,13 +1432,10 @@ def mcp_create_pty_session(
 
     master_fd, slave_fd = pty.openpty()
 
-    shell_env = os.environ.copy()
-    shell_env["TERM"] = "xterm-256color"
-    shell_env.pop("CLAUDECODE", None)
-    shell_env.pop("CLAUDE_CODE_SESSION", None)
-    shell_env.pop("DATABRICKS_TOKEN", None)
-    shell_env.pop("DATABRICKS_HOST", None)
-    shell_env.pop("GEMINI_API_KEY", None)
+    # Strip PAT, SP creds, registry tokens, and other secrets that must not be
+    # readable from the agent's PTY. See _build_terminal_shell_env docstring
+    # for the full list. (F-01)
+    shell_env = _build_terminal_shell_env(os.environ)
     if not shell_env.get("HOME") or shell_env["HOME"] == "/":
         shell_env["HOME"] = "/app/python/source_code"
     local_bin = f"{shell_env['HOME']}/.local/bin"
@@ -1497,6 +1494,7 @@ def mcp_create_pty_session(
                 "transcript_fh": transcript_fh,
                 "transcript_bytes": 0,
                 "replay_only": replay_only,
+                "env": shell_env,        # exposed for env-strip test
             }
 
         thread = threading.Thread(
