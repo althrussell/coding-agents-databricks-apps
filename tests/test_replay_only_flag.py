@@ -120,3 +120,32 @@ def test_coda_run_creates_pty_with_replay_only_true(tmp_path, monkeypatch):
     finally:
         if pty_id is not None:
             mcp_close_pty_session(pty_id)
+
+
+@_pty_skip
+def test_no_grace_key_in_coda_run_session_dict():
+    """Regression guard: coda_run-created PTYs must not have a 'grace' key,
+    and mcp_create_pty_session must not accept a 'grace' kwarg.
+
+    Protects against accidental re-introduction of grace-period machinery
+    in future changes.
+    """
+    import inspect
+    from app import mcp_create_pty_session, mcp_close_pty_session, sessions
+
+    # The function signature must not include 'grace'.
+    sig = inspect.signature(mcp_create_pty_session)
+    assert "grace" not in sig.parameters, (
+        f"mcp_create_pty_session should not accept a 'grace' parameter "
+        f"(found in signature: {list(sig.parameters)})"
+    )
+
+    # And the session dict must not contain a 'grace' key.
+    sid = mcp_create_pty_session(label="t-no-grace", replay_only=True)
+    try:
+        assert "grace" not in sessions[sid], (
+            f"session dict should not contain a 'grace' key "
+            f"(found: {list(sessions[sid].keys())})"
+        )
+    finally:
+        mcp_close_pty_session(sid)
