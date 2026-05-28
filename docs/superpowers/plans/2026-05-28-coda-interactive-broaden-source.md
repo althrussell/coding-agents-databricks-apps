@@ -13,7 +13,8 @@
 ## Files modified by this plan
 
 - **Modify:** `coda_mcp/mcp_server.py` — remove `branch` param, remove repos lookup, add `get_status` validation, update INTERACTIVE HANDOFF instructions paragraph and tool docstring, update import line
-- **Modify:** `tests/test_coda_interactive.py` — drop 3 tests, update 4 tests, add 2 tests
+- **Modify:** `tests/test_coda_interactive.py` — drop 3 tests, update 4 tests, add 4 tests (3 in Task 1 + 1 instructions-content test in Task 3)
+- **Modify:** `docs/superpowers/specs/2026-05-28-coda-interactive-mcp-tool-design.md` — prepend an amendment notice (Task 4)
 - **No change:** `coda_mcp/workspace_export.py` — already generic; we just re-use its `_is_directory` helper via import
 
 ## Pre-flight context
@@ -495,7 +496,63 @@ only applied to Git Folders."
 
 ---
 
-## Task 4: Push and update PR #67 description
+## Task 4: Amend the original spec doc
+
+The broadening spec says it "Amends" the original (line 6 of the broadening spec), but the original spec doc on disk still describes the `branch` parameter, `repos.list`/`repos.update`, and Git-Folder-only requirements. Anyone reading the original later would implement the wrong API. Add an amendment notice to its header.
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-05-28-coda-interactive-mcp-tool-design.md` (prepend amendment notice after the `**Related:**` line)
+
+- [ ] **Step 1: Read the current header of the original spec**
+
+Run: `head -10 docs/superpowers/specs/2026-05-28-coda-interactive-mcp-tool-design.md`
+
+You should see something like:
+
+```
+# Spec: `coda_interactive` MCP Tool
+
+**Status:** Draft, pre-critique-gate
+**Date:** 2026-05-28
+**Branch:** `feat/coda-mcp-live-session-url` (same as Todo 1)
+**Related:** `docs/superpowers/specs/2026-05-28-coda-run-replay-only-design.md` (Todo 1 — establishes the three-mode framework this spec slots into as Mode 2)
+
+## Goal
+```
+
+- [ ] **Step 2: Prepend the amendment notice**
+
+Use Edit to insert a new line after `**Related:**` (and before `## Goal`):
+
+The block to insert is:
+
+```markdown
+> **Amended by:** [`docs/superpowers/specs/2026-05-28-coda-interactive-broaden-source-design.md`](2026-05-28-coda-interactive-broaden-source-design.md) — the `branch` parameter and the Git-Folder-only requirement have been removed. `coda_interactive` now accepts any Workspace directory (Git Folder or plain). The `repos.list` + `repos.update` flow described in Section 3 of this spec has been replaced by a single `workspace.get_status` directory check. The return shape no longer includes a `"branch"` key.
+```
+
+After the edit, the header should read:
+
+```
+**Branch:** `feat/coda-mcp-live-session-url` (same as Todo 1)
+**Related:** `docs/superpowers/specs/2026-05-28-coda-run-replay-only-design.md` (Todo 1 — establishes the three-mode framework this spec slots into as Mode 2)
+
+> **Amended by:** [`docs/superpowers/specs/2026-05-28-coda-interactive-broaden-source-design.md`](2026-05-28-coda-interactive-broaden-source-design.md) — the `branch` parameter and the Git-Folder-only requirement have been removed. `coda_interactive` now accepts any Workspace directory (Git Folder or plain). The `repos.list` + `repos.update` flow described in Section 3 of this spec has been replaced by a single `workspace.get_status` directory check. The return shape no longer includes a `"branch"` key.
+
+## Goal
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git -c user.email=datasciencemonkey@gmail.com -c user.name="Sathish Gangichetty" \
+  add docs/superpowers/specs/2026-05-28-coda-interactive-mcp-tool-design.md
+git -c user.email=datasciencemonkey@gmail.com -c user.name="Sathish Gangichetty" \
+  commit -m "docs: mark original coda_interactive spec as amended by broaden-source spec"
+```
+
+---
+
+## Task 5: Push and update PR #67 description
 
 **Files:**
 - None (remote/PR update)
