@@ -16,7 +16,7 @@
 
 ```bash
 cd /Users/sathish.gangichetty/Documents/xterm-experiment/.worktrees/coda-mcp
-.venv/bin/python -m pytest tests/ -x --ignore=tests/test_e2e.py -q 2>&1 | tail -20
+.venv/bin/python -m pytest tests/ -x --ignore=tests/e2e -q 2>&1 | tail -20
 ```
 
 Expected: All pass (~527 passed + ~11 PTY-gated skipped). If anything fails on `main` for unrelated reasons, stop and report.
@@ -585,7 +585,7 @@ Expected: no matches.
 - [ ] **Step 4: Run the full suite — must still pass.**
 
 ```bash
-.venv/bin/python -m pytest tests/ -x --ignore=tests/test_e2e.py -q 2>&1 | tail -20
+.venv/bin/python -m pytest tests/ -x --ignore=tests/e2e -q 2>&1 | tail -20
 ```
 
 Expected: All remaining tests pass. The grace tests are gone; nothing imports `_mark_grace_for_session` or `GRACE_PERIOD_S` from test code anymore.
@@ -653,7 +653,7 @@ At the top of `coda_mcp/mcp_server.py`, find the line that mentions hooks (aroun
 - [ ] **Step 6: Run the suite.**
 
 ```bash
-.venv/bin/python -m pytest tests/ -x --ignore=tests/test_e2e.py -q 2>&1 | tail -15
+.venv/bin/python -m pytest tests/ -x --ignore=tests/e2e -q 2>&1 | tail -15
 ```
 
 Expected: All pass.
@@ -738,7 +738,7 @@ Expected: no matches (or only comment lines that reference history — delete th
 - [ ] **Step 5: Run the suite.**
 
 ```bash
-.venv/bin/python -m pytest tests/ -x --ignore=tests/test_e2e.py -q 2>&1 | tail -15
+.venv/bin/python -m pytest tests/ -x --ignore=tests/e2e -q 2>&1 | tail -15
 ```
 
 Expected: All pass.
@@ -806,7 +806,7 @@ Expected: matches only in historical documents (specs/plans from prior PRs). No 
 - [ ] **Step 5: Run the suite.**
 
 ```bash
-.venv/bin/python -m pytest tests/ -x --ignore=tests/test_e2e.py -q 2>&1 | tail -15
+.venv/bin/python -m pytest tests/ -x --ignore=tests/e2e -q 2>&1 | tail -15
 ```
 
 Expected: All pass.
@@ -984,7 +984,7 @@ Expected: 7 passed (the previous 6 + this regression-guard).
 - [ ] **Step 3: Run the full suite one final time.**
 
 ```bash
-.venv/bin/python -m pytest tests/ -x --ignore=tests/test_e2e.py -q 2>&1 | tail -15
+.venv/bin/python -m pytest tests/ -x --ignore=tests/e2e -q 2>&1 | tail -15
 ```
 
 Expected: Around 525 passed + ~11 skipped (PTY-gated). Net change from baseline: -2 tests.
@@ -1007,7 +1007,7 @@ if a future change tries to bring the grace machinery back."
 - [ ] **F1: Full suite green.**
 
 ```bash
-.venv/bin/python -m pytest tests/ --ignore=tests/test_e2e.py -q 2>&1 | tail -10
+.venv/bin/python -m pytest tests/ --ignore=tests/e2e -q 2>&1 | tail -10
 ```
 
 Expected: all pass.

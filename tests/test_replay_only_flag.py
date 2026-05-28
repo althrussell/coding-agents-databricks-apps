@@ -103,7 +103,7 @@ def test_coda_run_creates_pty_with_replay_only_true(tmp_path, monkeypatch):
     """coda_run must create its PTY with replay_only=True."""
     import asyncio
     import json
-    from app import sessions
+    from app import sessions, mcp_close_pty_session
     from coda_mcp import mcp_server, task_manager
 
     monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
@@ -112,9 +112,11 @@ def test_coda_run_creates_pty_with_replay_only_true(tmp_path, monkeypatch):
 
     result_str = asyncio.run(mcp_server.coda_run(prompt="ignored", email="t@example.com"))
     result = json.loads(result_str)
-    pty_id = task_manager._read_session(result["session_id"])["pty_session_id"]
+    session = task_manager._read_session(result["session_id"])
+    pty_id = session.get("pty_session_id")
     try:
+        assert pty_id is not None
         assert sessions[pty_id].get("replay_only") is True
     finally:
-        from app import mcp_close_pty_session
-        mcp_close_pty_session(pty_id)
+        if pty_id is not None:
+            mcp_close_pty_session(pty_id)
