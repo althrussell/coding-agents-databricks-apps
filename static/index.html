@@ -1420,17 +1420,19 @@
         const term = pane.term;
 
         if (data.replay) {
+          // Replay pane: static, read-only. createPane skipped onData/join_session
+          // wiring because of deepLinkSessionId, so we leave it that way. Keystrokes
+          // are ignored; nothing to clean up.
           const content = (data.output || []).join('');
-          // Stop polling for replay panes — they are static.
-          pollWorker.postMessage({ type: 'stop_poll', paneId: pane.id });
-          if (wsConnected && socket) {
-            socket.emit('leave_session', { session_id: sessionId });
-          }
           await _doReplay(term, sessionId, content);
         } else {
+          // Live pane: createPane skipped the default wiring, so we own it here.
           await _doAttach(term, sessionId);
-          if (typeof socket !== 'undefined' && socket) {
+          term.onData(d => sendInput(d, pane.sessionId));
+          if (wsConnected && socket) {
             socket.emit('join_session', { session_id: sessionId });
+          } else {
+            pollWorker.postMessage({ type: 'start_poll', paneId: pane.id, sessionId: sessionId });
           }
         }
 
@@ -1807,13 +1809,19 @@
 
       const pane = { id, element, term, fitAddon, searchAddon, sessionId: sid,
         batchWrite: createWriteBatcher(term) };
-      term.onData(data => sendInput(data, pane.sessionId));
 
-      // Join WebSocket room if connected; otherwise start HTTP polling (AC-11, AC-16)
-      if (wsConnected && socket) {
-        socket.emit('join_session', { session_id: sid });
-      } else {
-        pollWorker.postMessage({ type: 'start_poll', paneId: id, sessionId: sid });
+      // Deep-link panes own their own input wiring + transport joins from
+      // _initFromQueryString (so replay mode can stay read-only and live mode
+      // doesn't double-emit join_session). Skip the default wiring here.
+      if (!opts.deepLinkSessionId) {
+        term.onData(data => sendInput(data, pane.sessionId));
+
+        // Join WebSocket room if connected; otherwise start HTTP polling (AC-11, AC-16)
+        if (wsConnected && socket) {
+          socket.emit('join_session', { session_id: sid });
+        } else {
+          pollWorker.postMessage({ type: 'start_poll', paneId: id, sessionId: sid });
+        }
       }
 
       // Click to focus
