@@ -22,10 +22,16 @@ def capture_from_headers(host: Optional[str]) -> None:
 
     No-op when ``host`` is falsy (None or empty) to avoid wiping a good
     cache value with a missing header on a probe/CORS preflight.
+
+    Strips any accidental ``https://`` / ``http://`` prefix on the way in
+    so build_viewer_url's unconditional ``https://`` prepend can't produce
+    a double-scheme URL.
     """
     global _app_url_cache
     if host:
-        _app_url_cache = host
+        host = host.removeprefix("https://").removeprefix("http://").strip("/")
+        if host:
+            _app_url_cache = host
 
 
 def build_viewer_url(pty_session_id: str) -> Optional[str]:

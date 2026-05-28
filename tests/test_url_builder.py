@@ -66,3 +66,17 @@ def test_capture_none_does_not_crash():
     from coda_mcp import url_builder
     url_builder.capture_from_headers(None)
     assert url_builder.build_viewer_url("pty-1") is None
+
+
+def test_capture_strips_scheme_prefix():
+    from coda_mcp import url_builder
+    url_builder.capture_from_headers("https://app.example.com")
+    assert url_builder._app_url_cache == "app.example.com"
+    assert url_builder.build_viewer_url("pty-1") == "https://app.example.com/?session=pty-1"
+
+
+def test_capture_strips_http_scheme_prefix():
+    from coda_mcp import url_builder
+    url_builder.capture_from_headers("http://app.example.com/")
+    # http stripped, trailing slash stripped
+    assert url_builder._app_url_cache == "app.example.com"

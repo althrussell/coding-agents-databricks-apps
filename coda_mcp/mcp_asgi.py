@@ -23,9 +23,36 @@ with warnings.catch_warnings():
     from starlette.middleware.wsgi import WSGIMiddleware
 
 from coda_mcp.mcp_server import mcp as mcp_instance, set_app_hooks
+from coda_mcp import url_builder
 from utils import ensure_https
 
 logger = logging.getLogger(__name__)
+
+
+class AppUrlCaptureMiddleware:
+    """Capture X-Forwarded-Host (or Host) from every inbound HTTP request and
+    populate url_builder._app_url_cache. Used so MCP tools can return a
+    working viewer_url without manual configuration.
+
+    Caveat: /socket.io/ traffic is intercepted by socketio.ASGIApp *before*
+    reaching mcp_starlette, so WebSocket connect requests never hit this
+    middleware. This is fine in practice — every HTTP request to /mcp and to
+    Flask routes does hit it, which is enough to keep the cache hot.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            headers = dict(scope.get("headers") or [])
+            host_bytes = headers.get(b"x-forwarded-host") or headers.get(b"host")
+            if host_bytes:
+                try:
+                    url_builder.capture_from_headers(host_bytes.decode("latin-1"))
+                except Exception:
+                    pass
+        await self.app(scope, receive, send)
 
 # ── Build allowed origins ─────────────────────────────────────────
 # The browser connects from the app's own URL (e.g. mcp-test-coda-*.databricksapps.com)
@@ -84,6 +111,10 @@ mcp_starlette.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Capture X-Forwarded-Host into url_builder cache (for MCP viewer_url).
+# Added AFTER CORS so it wraps the CORS-handled request.
+mcp_starlette.add_middleware(AppUrlCaptureMiddleware)
 
 # ── Top-level ASGI app ────────────────────────────────────────────
 # socketio.ASGIApp intercepts /socket.io/ for WebSocket + polling,
