@@ -1154,6 +1154,37 @@ def list_sessions():
     return jsonify(result)
 
 
+def _serve_transcript_replay(session_id: str):
+    """Serve the on-disk transcript for a PTY session as a replay response.
+
+    Used by attach_session() in two cases:
+      1. The PTY is gone (existing transcript-fallback path).
+      2. The PTY exists but is replay_only=True (new in Task 3).
+
+    Returns either a Flask JSON response with replay=True, or a 404 if no
+    transcript exists for this pty_session_id.
+    """
+    from coda_mcp import task_manager as _tm
+    tdir = _tm.find_task_dir_by_pty_session(session_id)
+    if tdir:
+        transcript = os.path.join(tdir, "transcript.log")
+        if os.path.isfile(transcript):
+            try:
+                with open(transcript, "rb") as f:
+                    content = f.read()
+                return jsonify({
+                    "session_id": session_id,
+                    "label": "hermes-mcp (replay)",
+                    "output": [content.decode("utf-8", errors="replace")],
+                    "replay": True,
+                    "process": None,
+                    "created_at": None,
+                })
+            except OSError:
+                pass
+    return jsonify({"error": "Session not found or exited"}), 404
+
+
 @app.route("/api/session/attach", methods=["POST"])
 def attach_session():
     """Reattach to an existing session — returns buffered output for replay.
@@ -1166,26 +1197,7 @@ def attach_session():
 
     sess = _get_session(session_id)
     if not sess or sess.get("exited"):
-        # Replay fallback: look up transcript.log by pty_session_id
-        from coda_mcp import task_manager as _tm
-        tdir = _tm.find_task_dir_by_pty_session(session_id)
-        if tdir:
-            transcript = os.path.join(tdir, "transcript.log")
-            if os.path.isfile(transcript):
-                try:
-                    with open(transcript, "rb") as f:
-                        content = f.read()
-                    return jsonify({
-                        "session_id": session_id,
-                        "label": "hermes-mcp (replay)",
-                        "output": [content.decode("utf-8", errors="replace")],
-                        "replay": True,
-                        "process": None,
-                        "created_at": None,
-                    })
-                except OSError:
-                    pass
-        return jsonify({"error": "Session not found or exited"}), 404
+        return _serve_transcript_replay(session_id)
 
     # Existing live-attach path
     sess["last_poll_time"] = time.time()
