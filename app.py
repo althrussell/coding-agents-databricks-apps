@@ -1425,34 +1425,45 @@ def mcp_create_pty_session(label: str = "hermes-mcp", transcript_path: str | Non
 
     session_id = str(uuid.uuid4())
 
-    with sessions_lock:
-        if len(sessions) >= MAX_CONCURRENT_SESSIONS:
-            os.close(master_fd)
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-            raise RuntimeError(
-                f"Maximum {MAX_CONCURRENT_SESSIONS} concurrent sessions reached."
-            )
-        sessions[session_id] = {
-            "master_fd": master_fd,
-            "pid": pid,
-            "output_buffer": deque(maxlen=1000),
-            "lock": threading.Lock(),
-            "last_poll_time": time.time(),
-            "created_at": time.time(),
-            "label": label,
-            "transcript_path": transcript_path if transcript_fh else None,
-            "transcript_fh": transcript_fh,
-            "transcript_bytes": 0,
-            "grace": False,
-        }
+    try:
+        with sessions_lock:
+            if len(sessions) >= MAX_CONCURRENT_SESSIONS:
+                os.close(master_fd)
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                raise RuntimeError(
+                    f"Maximum {MAX_CONCURRENT_SESSIONS} concurrent sessions reached."
+                )
+            sessions[session_id] = {
+                "master_fd": master_fd,
+                "pid": pid,
+                "output_buffer": deque(maxlen=1000),
+                "lock": threading.Lock(),
+                "last_poll_time": time.time(),
+                "created_at": time.time(),
+                "label": label,
+                "transcript_path": transcript_path if transcript_fh else None,
+                "transcript_fh": transcript_fh,
+                "transcript_bytes": 0,
+                "grace": False,
+            }
 
-    thread = threading.Thread(
-        target=read_pty_output, args=(session_id, master_fd), daemon=True
-    )
-    thread.start()
+        thread = threading.Thread(
+            target=read_pty_output, args=(session_id, master_fd), daemon=True
+        )
+        thread.start()
+    except BaseException:
+        # Roll back transcript open if anything below it raises before the
+        # session is fully wired. The PTY itself is cleaned up by existing
+        # error paths; this is just the transcript handle.
+        if transcript_fh is not None:
+            try:
+                transcript_fh.close()
+            except Exception:
+                pass
+        raise
 
     return session_id
 

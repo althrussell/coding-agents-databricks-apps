@@ -11,6 +11,24 @@ from pathlib import Path
 
 import pytest
 
+# The three tests that hit mcp_create_pty_session call pty.openpty(), which
+# fails in headless CI containers without TTY allocators. Mark those tests
+# explicitly so existing fixture-based tests (test_tee_*) keep running.
+def _pty_is_usable() -> bool:
+    if not hasattr(os, "openpty"):
+        return False
+    try:
+        master, slave = os.openpty()
+        os.close(master)
+        os.close(slave)
+        return True
+    except OSError:
+        return False
+
+
+_pty_available = _pty_is_usable()
+_pty_skip = pytest.mark.skipif(not _pty_available, reason="pty.openpty() not available")
+
 
 @pytest.fixture
 def session_dict(tmp_path):
@@ -69,6 +87,7 @@ def test_tee_handles_write_error(session_dict, monkeypatch):
     assert session_dict["transcript_fh"] is None
 
 
+@_pty_skip
 def test_mcp_create_pty_session_opens_transcript_when_path_given(tmp_path, monkeypatch):
     monkeypatch.setattr("app.MAX_CONCURRENT_SESSIONS", 5)
     transcript = tmp_path / "transcript.log"
@@ -86,6 +105,7 @@ def test_mcp_create_pty_session_opens_transcript_when_path_given(tmp_path, monke
         mcp_close_pty_session(sid)
 
 
+@_pty_skip
 def test_mcp_create_pty_session_no_transcript_when_path_none(monkeypatch):
     monkeypatch.setattr("app.MAX_CONCURRENT_SESSIONS", 5)
     from app import mcp_create_pty_session, sessions, mcp_close_pty_session
@@ -98,6 +118,7 @@ def test_mcp_create_pty_session_no_transcript_when_path_none(monkeypatch):
         mcp_close_pty_session(sid)
 
 
+@_pty_skip
 def test_terminate_session_closes_transcript_handle(tmp_path, monkeypatch):
     monkeypatch.setattr("app.MAX_CONCURRENT_SESSIONS", 5)
     transcript = tmp_path / "transcript.log"
