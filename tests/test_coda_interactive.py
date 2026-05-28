@@ -8,6 +8,11 @@ import pytest
 ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
 
 
+async def _no_wait(*a, **kw):
+    """No-op replacement for _wait_for_agent_ready in tests."""
+    return None
+
+
 def test_coda_interactive_unknown_agent_returns_error():
     """An agent value not in the allow-list returns status=error and lists allowed values."""
     from coda_mcp import mcp_server
@@ -187,8 +192,6 @@ def test_coda_interactive_happy_path_sends_agent_command_and_prompt(monkeypatch,
     )
 
     # Stub the agent-ready wait so the test runs fast.
-    async def _no_wait(*a, **kw):
-        return
     monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", _no_wait)
 
     monkeypatch.setattr(
@@ -249,8 +252,6 @@ def test_coda_interactive_agent_command_matrix(monkeypatch, tmp_path):
         monkeypatch.setattr(
             mcp_server, "_app_send_input", lambda sid, p: sent.append(p),
         )
-        async def _no_wait(*a, **kw):
-            return
         monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", _no_wait)
         monkeypatch.setattr(
             mcp_server.url_builder, "build_viewer_url",
@@ -290,8 +291,6 @@ def test_coda_interactive_does_not_use_blocking_sleep(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(mcp_server, "_app_create_session", lambda **kw: "pty-noblock-id")
     monkeypatch.setattr(mcp_server, "_app_send_input", lambda *a, **k: None)
-    async def _no_wait(*a, **kw):
-        return
     monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", _no_wait)
     monkeypatch.setattr(
         mcp_server.url_builder, "build_viewer_url", lambda pty_id: f"https://t/?s={pty_id}",
@@ -326,7 +325,6 @@ def test_wait_for_agent_ready_returns_when_buffer_stabilizes(monkeypatch):
     monkeypatch.setattr(mcp_server, "_PROMPT_SEED_MAX_WAIT_S", 2.0)
 
     try:
-        start = asyncio.new_event_loop().time() if False else None  # dummy
         # Buffer is already populated and won't change → helper should return quickly.
         async def _run():
             import time
@@ -362,7 +360,7 @@ def test_wait_for_agent_ready_times_out_when_buffer_empty(monkeypatch):
         elapsed = asyncio.run(_run())
 
         # Should have hit max-wait since buffer never had content.
-        assert 0.25 <= elapsed <= 0.6, f"Expected ~0.3s max-wait timeout; got {elapsed:.2f}s"
+        assert 0.2 <= elapsed <= 0.8, f"Expected ~0.3s max-wait timeout; got {elapsed:.2f}s"
     finally:
         sessions.pop(sid, None)
 

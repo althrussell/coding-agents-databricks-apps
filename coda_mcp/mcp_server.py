@@ -329,7 +329,7 @@ async def _wait_for_agent_ready(pty_session_id: str) -> None:
     (PTY died), return immediately.
     """
     from app import sessions
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + _PROMPT_SEED_MAX_WAIT_S
     last_len = -1
     stable_since: float | None = None
