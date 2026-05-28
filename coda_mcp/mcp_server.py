@@ -6,7 +6,7 @@ v2: Background execution + inbox pattern.
 - ``coda_get_result`` — pull full structured result for a completed task
 
 Delegates all disk state to ``task_manager.py``.  PTY operations are
-handled through optional app hooks set via ``set_app_hooks()``.
+handled through app hooks (create/send/close) set via ``set_app_hooks()``.
 
 Run standalone for testing::
 
@@ -76,32 +76,22 @@ mcp = FastMCP(
 _app_create_session = None
 _app_send_input = None
 _app_close_session = None
-_app_mark_grace = None
-_app_bump_poll = None
-
-GRACE_PERIOD_S = 300  # 5 minutes
 
 
 def set_app_hooks(
     create_session_fn,
     send_input_fn,
     close_session_fn,
-    mark_grace_fn=None,
-    bump_poll_fn=None,
 ):
     """Wire up Flask app callbacks for PTY operations.
 
-    The two new optional hooks (mark_grace, bump_poll) are used by ``_watch_task``
-    to defer PTY close by ``GRACE_PERIOD_S`` after task completion so live viewers
-    can keep watching for a few minutes.
+    Registers the create/send/close hooks that ``coda_run`` and ``_watch_task``
+    use to drive the underlying PTY session.
     """
     global _app_create_session, _app_send_input, _app_close_session
-    global _app_mark_grace, _app_bump_poll
     _app_create_session = create_session_fn
     _app_send_input = send_input_fn
     _app_close_session = close_session_fn
-    _app_mark_grace = mark_grace_fn
-    _app_bump_poll = bump_poll_fn
 
 
 # ── Background watcher ──────────────────────────────────────────────
@@ -165,12 +155,12 @@ def _watch_task(session_id: str, task_id: str, timeout_s: int) -> None:
 
 
 def _close_pty_immediately(session_id: str) -> None:
-    """Close the PTY associated with a session, skipping the grace window.
+    """Close the PTY session associated with this task session immediately.
 
-    This bypasses the deferred-close grace period that production paths use
-    via ``_schedule_deferred_close``. Only use from emergency teardown or
-    tests; production watchers should prefer the deferred variant so users
-    have a window to deep-link in and view a final replay.
+    Called by ``_watch_task`` as soon as the task transitions to completed
+    or failed. Reads ``pty_session_id`` from the task-manager's session.json
+    and calls the ``_app_close_session`` hook (i.e. ``mcp_close_pty_session``
+    in production).
     """
     if _app_close_session is None:
         return
@@ -181,37 +171,6 @@ def _close_pty_immediately(session_id: str) -> None:
             _app_close_session(pty_session_id)
     except Exception:
         logger.debug("Could not close PTY for session %s", session_id, exc_info=True)
-
-
-def _schedule_deferred_close(session_id: str) -> None:
-    """Mark the PTY as in-grace and schedule a delayed close.
-
-    Both completion and timeout paths call this in place of the immediate
-    ``_close_pty_immediately``. The Timer is a daemon thread so it doesn't
-    block uvicorn shutdown.
-    """
-    if _app_close_session is None:
-        return
-    try:
-        session = task_manager._read_session(session_id)
-    except task_manager.SessionNotFoundError:
-        return
-    pty_session_id = session.get("pty_session_id")
-    if not pty_session_id:
-        return
-
-    if _app_mark_grace is not None:
-        _app_mark_grace(pty_session_id)
-    if _app_bump_poll is not None:
-        _app_bump_poll(pty_session_id, GRACE_PERIOD_S)
-
-    t = threading.Timer(GRACE_PERIOD_S, _app_close_session, args=(pty_session_id,))
-    t.daemon = True
-    t.start()
-    logger.info(
-        "Watcher: scheduled deferred close for pty %s in %ds",
-        pty_session_id, GRACE_PERIOD_S,
-    )
 
 
 # ── Tool definitions ────────────────────────────────────────────────

@@ -367,7 +367,7 @@ def test_coda_run_includes_viewer_url_when_builder_returns_one(tmp_path, monkeyp
     create = mock.MagicMock(return_value="pty-abc")
     send = mock.MagicMock()
     closer = mock.MagicMock()
-    mcp_server.set_app_hooks(create, send, closer, mock.MagicMock(), mock.MagicMock())
+    mcp_server.set_app_hooks(create, send, closer)
 
     result_json = asyncio.run(mcp_server.coda_run(prompt="do it", email="u@x"))
     result = json.loads(result_json)
@@ -382,7 +382,7 @@ def test_coda_run_omits_viewer_url_when_builder_returns_none(tmp_path, monkeypat
     monkeypatch.delenv("CODA_APP_URL", raising=False)
 
     create = mock.MagicMock(return_value="pty-abc")
-    mcp_server.set_app_hooks(create, mock.MagicMock(), mock.MagicMock(), mock.MagicMock(), mock.MagicMock())
+    mcp_server.set_app_hooks(create, mock.MagicMock(), mock.MagicMock())
 
     result_json = asyncio.run(mcp_server.coda_run(prompt="do it", email="u@x"))
     result = json.loads(result_json)
@@ -393,7 +393,7 @@ def test_coda_run_omits_viewer_url_when_builder_returns_none(tmp_path, monkeypat
 def test_coda_run_passes_transcript_path_to_create_session(tmp_path, monkeypatch):
     monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
     create = mock.MagicMock(return_value="pty-abc")
-    mcp_server.set_app_hooks(create, mock.MagicMock(), mock.MagicMock(), mock.MagicMock(), mock.MagicMock())
+    mcp_server.set_app_hooks(create, mock.MagicMock(), mock.MagicMock())
 
     asyncio.run(mcp_server.coda_run(prompt="do it", email="u@x"))
     # create_session was called with transcript_path=... pointing into ~/.coda/sessions/<sess>/tasks/<task>/transcript.log
