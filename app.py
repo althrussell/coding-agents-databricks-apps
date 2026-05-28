@@ -1421,6 +1421,7 @@ def mcp_create_pty_session(
     label: str = "hermes-mcp",
     transcript_path: str | None = None,
     replay_only: bool = False,
+    cwd: str | None = None,
 ) -> str:
     """Create a PTY session for MCP use. Returns the PTY session_id."""
     with sessions_lock:
@@ -1444,6 +1445,10 @@ def mcp_create_pty_session(
     projects_dir = os.path.join(shell_env["HOME"], "projects")
     os.makedirs(projects_dir, exist_ok=True)
 
+    # When caller passes cwd, use it; otherwise fall back to projects_dir
+    # (preserves current behavior for existing callers that don't pass cwd).
+    spawn_cwd = cwd if cwd is not None else projects_dir
+
     pid = subprocess.Popen(
         ["/bin/bash"],
         stdin=slave_fd,
@@ -1451,7 +1456,7 @@ def mcp_create_pty_session(
         stderr=slave_fd,
         preexec_fn=os.setsid,
         env=shell_env,
-        cwd=projects_dir,
+        cwd=spawn_cwd,
     ).pid
     os.close(slave_fd)
 
@@ -1494,6 +1499,7 @@ def mcp_create_pty_session(
                 "transcript_fh": transcript_fh,
                 "transcript_bytes": 0,
                 "replay_only": replay_only,
+                "cwd": cwd,
             }
 
         thread = threading.Thread(
