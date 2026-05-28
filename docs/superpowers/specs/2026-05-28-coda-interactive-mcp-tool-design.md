@@ -5,6 +5,8 @@
 **Branch:** `feat/coda-mcp-live-session-url` (same as Todo 1)
 **Related:** `docs/superpowers/specs/2026-05-28-coda-run-replay-only-design.md` (Todo 1 — establishes the three-mode framework this spec slots into as Mode 2)
 
+> **Amended by:** [`docs/superpowers/specs/2026-05-28-coda-interactive-broaden-source-design.md`](2026-05-28-coda-interactive-broaden-source-design.md) — the `branch` parameter and the Git-Folder-only requirement have been removed. `coda_interactive` now accepts any Workspace directory (Git Folder or plain). The `repos.list` + `repos.update` flow described in Section 3 of this spec has been replaced by a single `workspace.get_status` directory check. The return shape no longer includes a `"branch"` key.
+
 ## Goal
 
 Add a new MCP tool, `coda_interactive`, that lets an upstream MCP client (Genie Code, Claude Desktop, Cursor) hand off an in-flight coding session to a human via a CoDA viewer URL. The handoff carries:
