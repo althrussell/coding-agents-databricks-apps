@@ -262,3 +262,44 @@ def test_coda_interactive_agent_command_matrix(monkeypatch, tmp_path):
         # sent[0] is cd, sent[1] is the agent command, sent[2] is the prompt.
         assert sent[1] == expected_cmd, \
             f"agent {agent}: expected {expected_cmd!r}, got {sent[1]!r}"
+
+
+def test_coda_interactive_does_not_use_blocking_sleep(monkeypatch, tmp_path):
+    """Regression guard: coda_interactive is async; it must use asyncio.sleep, not time.sleep.
+
+    A blocking sleep in an async handler stalls the event loop and prevents
+    concurrent MCP requests from being processed.
+    """
+    from unittest.mock import MagicMock
+    from coda_mcp import mcp_server
+    import time as _time
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    fake_repo = MagicMock(); fake_repo.id = 1; fake_repo.path = "/W/x/p"
+    fake_client = MagicMock()
+    fake_client.repos.list.return_value = [fake_repo]
+    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
+    monkeypatch.setattr(
+        mcp_server, "export_workspace_tree",
+        lambda client, ws_path, dest_dir: os.makedirs(dest_dir, exist_ok=True),
+    )
+    monkeypatch.setattr(mcp_server, "_app_create_session", lambda **kw: "pty-noblock-id")
+    monkeypatch.setattr(mcp_server, "_app_send_input", lambda *a, **k: None)
+    monkeypatch.setattr(mcp_server, "_PROMPT_SEED_DELAY_S", 0)
+    monkeypatch.setattr(
+        mcp_server.url_builder, "build_viewer_url", lambda pty_id: f"https://t/?s={pty_id}",
+    )
+
+    # Trap time.sleep — if anything in coda_interactive calls it, the test fails.
+    blocking_calls = []
+    monkeypatch.setattr(_time, "sleep", lambda s: blocking_calls.append(s))
+
+    asyncio.run(mcp_server.coda_interactive(
+        prompt="x", workspace_path="/W/x/p",
+    ))
+
+    assert blocking_calls == [], (
+        f"coda_interactive called time.sleep({blocking_calls}); must use asyncio.sleep "
+        f"instead so the event loop isn't blocked."
+    )

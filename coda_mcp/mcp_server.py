@@ -13,10 +13,12 @@ Run standalone for testing::
     python mcp_server.py          # stdio transport
 """
 
+import asyncio
 import json
 import logging
 import os
 import shlex
+import shutil
 import threading
 import time
 
@@ -408,7 +410,6 @@ async def coda_interactive(
                     _app_close_session(pty_session_id)
                 except Exception:
                     pass
-            import shutil
             if os.path.isdir(project_dir):
                 shutil.rmtree(project_dir, ignore_errors=True)
             return json.dumps({
@@ -429,7 +430,7 @@ async def coda_interactive(
         _app_send_input(pty_session_id, launch_cmd + "\n")
 
         # Wait briefly for agent initialization, then paste the prompt.
-        time.sleep(_PROMPT_SEED_DELAY_S)
+        await asyncio.sleep(_PROMPT_SEED_DELAY_S)
         _app_send_input(pty_session_id, prompt + "\n")
 
         viewer_url = url_builder.build_viewer_url(pty_session_id)
@@ -458,7 +459,6 @@ async def coda_interactive(
             except Exception:
                 pass
         if project_dir and os.path.isdir(project_dir):
-            import shutil
             shutil.rmtree(project_dir, ignore_errors=True)
         return json.dumps({
             "status": "error",
