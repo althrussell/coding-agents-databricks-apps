@@ -7,6 +7,23 @@ import pytest
 
 from coda_mcp import task_manager
 
+import os as _os
+import pytest as _pytest
+
+try:
+    import pty as _pty
+    _master, _slave = _pty.openpty()
+    _os.close(_master)
+    _os.close(_slave)
+    _PTY_AVAILABLE = True
+except Exception:
+    _PTY_AVAILABLE = False
+
+_pty_skip = _pytest.mark.skipif(
+    not _PTY_AVAILABLE,
+    reason="PTY not allocatable in this environment",
+)
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -51,3 +68,40 @@ def test_attach_404_when_pty_gone_and_no_transcript(client):
     c, root = client
     resp = c.post("/api/session/attach", json={"session_id": "pty-nope"})
     assert resp.status_code == 404
+
+
+@_pty_skip
+def test_attach_session_returns_replay_for_alive_replay_only_pty(tmp_path, monkeypatch):
+    """A coda_run-style PTY (replay_only=True) that is still alive serves the transcript.
+
+    This is the new contract introduced by the replay-only flag — historically
+    a live PTY would serve its output_buffer.
+    """
+    import os
+    from app import app as flask_app, mcp_create_pty_session, mcp_close_pty_session
+    from coda_mcp import task_manager
+
+    monkeypatch.setattr(task_manager, "SESSIONS_DIR", str(tmp_path))
+
+    sid = mcp_create_pty_session(label="replay-alive", replay_only=True)
+    try:
+        sess_id = "sess-x"
+        task_id = "task-x"
+        sdir = tmp_path / sess_id
+        tdir = sdir / "tasks" / task_id
+        tdir.mkdir(parents=True)
+        (sdir / "session.json").write_text(
+            '{"session_id": "%s", "pty_session_id": "%s", "current_task": "%s"}' % (sess_id, sid, task_id)
+        )
+        (tdir / "transcript.log").write_bytes(b"FROM DISK")
+        # Cache may have stale entries from earlier tests — clear before the lookup.
+        task_manager._pty_lookup_cache.clear()
+
+        client = flask_app.test_client()
+        resp = client.post("/api/session/attach", json={"session_id": sid})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["replay"] is True
+        assert body["output"] == ["FROM DISK"]
+    finally:
+        mcp_close_pty_session(sid)
