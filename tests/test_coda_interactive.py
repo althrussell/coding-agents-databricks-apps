@@ -3,8 +3,6 @@ import asyncio
 import json
 import os
 
-import pytest
-
 ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
 
 
@@ -14,10 +12,20 @@ async def _no_wait(*a, **kw):
 
 
 def _make_dir_status():
-    """Build a mock object_type=DIRECTORY response from workspace.get_status."""
+    """Build a DIRECTORY-typed workspace.get_status response.
+
+    Prefers the real ObjectType.DIRECTORY enum so the tests exercise the
+    primary _is_directory branch (enum match). Falls back to the plain
+    string when the SDK is not importable, which keeps the tests usable
+    in minimal environments.
+    """
     from unittest.mock import MagicMock
     status = MagicMock()
-    status.object_type = "DIRECTORY"
+    try:
+        from databricks.sdk.service.workspace import ObjectType
+        status.object_type = ObjectType.DIRECTORY
+    except ImportError:
+        status.object_type = "DIRECTORY"
     return status
 
 
