@@ -1536,6 +1536,21 @@ def mcp_close_pty_session(session_id: str):
         return
     terminate_session(session_id, session["pid"], session["master_fd"])
 
+    # Clean up the project dir if coda_interactive created one.
+    # Tying the project's disk lifecycle to the PTY's lifecycle means there is
+    # no separate timer / cleanup queue to maintain. Best-effort: a stuck file
+    # logs a warning but does not break the close path.
+    import shutil
+    project_dir = os.path.join(
+        os.path.expanduser("~/.coda/projects"),
+        session_id,
+    )
+    if os.path.isdir(project_dir):
+        try:
+            shutil.rmtree(project_dir)
+        except OSError as e:
+            logger.warning("Failed to clean up project dir %s: %s", project_dir, e)
+
 
 @app.route("/api/input", methods=["POST"])
 def send_input():

@@ -100,3 +100,57 @@ def test_mcp_create_pty_session_cwd_defaults_to_none():
     finally:
         if sid is not None:
             mcp_close_pty_session(sid)
+
+
+@_pty_skip
+def test_mcp_close_pty_session_removes_project_dir(tmp_path, monkeypatch):
+    """When the PTY is closed, any project dir at ~/.coda/projects/<pty_id>/ is removed."""
+    import os
+    from app import mcp_create_pty_session, mcp_close_pty_session
+
+    # Point HOME at tmp_path so ~/.coda lives in a controllable place.
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    sid = None
+    try:
+        sid = mcp_create_pty_session(label="t-cleanup")
+
+        project_dir = os.path.join(str(tmp_path), ".coda", "projects", sid)
+        os.makedirs(project_dir, exist_ok=True)
+        sentinel = os.path.join(project_dir, "SENTINEL")
+        with open(sentinel, "w") as f:
+            f.write("present-before-close")
+        assert os.path.exists(sentinel)
+
+        mcp_close_pty_session(sid)
+        sid = None  # session closed; don't double-close in finally
+
+        assert not os.path.exists(project_dir), \
+            f"Expected project dir to be removed after PTY close: {project_dir} still exists"
+    finally:
+        if sid is not None:
+            try:
+                mcp_close_pty_session(sid)
+            except Exception:
+                pass
+
+
+@_pty_skip
+def test_mcp_close_pty_session_handles_missing_project_dir(tmp_path, monkeypatch):
+    """No project dir present → close still succeeds (no exception)."""
+    from app import mcp_create_pty_session, mcp_close_pty_session
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    sid = None
+    try:
+        sid = mcp_create_pty_session(label="t-no-projdir")
+        # Do NOT create the project dir — verify close still works.
+        mcp_close_pty_session(sid)  # must not raise
+        sid = None
+    finally:
+        if sid is not None:
+            try:
+                mcp_close_pty_session(sid)
+            except Exception:
+                pass
