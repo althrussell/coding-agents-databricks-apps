@@ -67,3 +67,44 @@ def test_tee_handles_write_error(session_dict, monkeypatch):
     _write_chunk(session_dict, b"this will fail")
     # Handle replaced with None; no crash.
     assert session_dict["transcript_fh"] is None
+
+
+def test_mcp_create_pty_session_opens_transcript_when_path_given(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.MAX_CONCURRENT_SESSIONS", 5)
+    transcript = tmp_path / "transcript.log"
+    from app import mcp_create_pty_session, sessions, mcp_close_pty_session
+    sid = mcp_create_pty_session(label="test", transcript_path=str(transcript))
+    try:
+        assert transcript.exists()
+        mode = stat.S_IMODE(os.stat(transcript).st_mode)
+        assert mode == 0o600
+        sess = sessions[sid]
+        assert sess["transcript_path"] == str(transcript)
+        assert sess["transcript_fh"] is not None
+        assert sess["transcript_bytes"] == 0
+    finally:
+        mcp_close_pty_session(sid)
+
+
+def test_mcp_create_pty_session_no_transcript_when_path_none(monkeypatch):
+    monkeypatch.setattr("app.MAX_CONCURRENT_SESSIONS", 5)
+    from app import mcp_create_pty_session, sessions, mcp_close_pty_session
+    sid = mcp_create_pty_session(label="test")
+    try:
+        sess = sessions[sid]
+        assert sess.get("transcript_fh") is None
+        assert sess.get("transcript_path") is None
+    finally:
+        mcp_close_pty_session(sid)
+
+
+def test_terminate_session_closes_transcript_handle(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.MAX_CONCURRENT_SESSIONS", 5)
+    transcript = tmp_path / "transcript.log"
+    from app import mcp_create_pty_session, sessions, mcp_close_pty_session
+    sid = mcp_create_pty_session(label="test", transcript_path=str(transcript))
+    fh = sessions[sid]["transcript_fh"]
+    mcp_close_pty_session(sid)
+    assert fh.closed
+    # Session removed from dict
+    assert sid not in sessions

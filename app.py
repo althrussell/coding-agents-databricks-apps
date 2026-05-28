@@ -955,6 +955,20 @@ def terminate_session(session_id, pid, master_fd):
     # Notify WebSocket clients that the session is closed
     _emit_from_thread('session_closed', {'session_id': session_id}, room=session_id)
 
+    # Close transcript handle (if any) under per-session lock; swap-then-close
+    # outside the lock to avoid blocking on slow filesystems.
+    with sessions_lock:
+        sess = sessions.get(session_id)
+    if sess is not None:
+        with sess["lock"]:
+            transcript_fh = sess.get("transcript_fh")
+            sess["transcript_fh"] = None
+        if transcript_fh is not None:
+            try:
+                transcript_fh.close()
+            except Exception:
+                pass
+
     try:
         os.kill(pid, signal.SIGHUP)
         time.sleep(GRACEFUL_SHUTDOWN_WAIT)
@@ -1360,7 +1374,7 @@ def create_session():
 # ── MCP Integration Helpers ──────────────────────────────────────────
 
 
-def mcp_create_pty_session(label: str = "hermes-mcp") -> str:
+def mcp_create_pty_session(label: str = "hermes-mcp", transcript_path: str | None = None) -> str:
     """Create a PTY session for MCP use. Returns the PTY session_id."""
     with sessions_lock:
         if len(sessions) >= MAX_CONCURRENT_SESSIONS:
@@ -1396,6 +1410,19 @@ def mcp_create_pty_session(label: str = "hermes-mcp") -> str:
     ).pid
     os.close(slave_fd)
 
+    # Open transcript file (if requested) before locking the session dict.
+    transcript_fh = None
+    if transcript_path:
+        try:
+            parent_dir = os.path.dirname(transcript_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            transcript_fh = open(transcript_path, "ab", buffering=0)
+            os.fchmod(transcript_fh.fileno(), 0o600)
+        except OSError as exc:
+            logger.warning("Could not open transcript at %s: %s", transcript_path, exc)
+            transcript_fh = None
+
     session_id = str(uuid.uuid4())
 
     with sessions_lock:
@@ -1416,6 +1443,10 @@ def mcp_create_pty_session(label: str = "hermes-mcp") -> str:
             "last_poll_time": time.time(),
             "created_at": time.time(),
             "label": label,
+            "transcript_path": transcript_path if transcript_fh else None,
+            "transcript_fh": transcript_fh,
+            "transcript_bytes": 0,
+            "grace": False,
         }
 
     thread = threading.Thread(
