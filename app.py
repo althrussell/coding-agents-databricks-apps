@@ -1156,15 +1156,38 @@ def list_sessions():
 
 @app.route("/api/session/attach", methods=["POST"])
 def attach_session():
-    """Reattach to an existing session — returns buffered output for replay."""
+    """Reattach to an existing session — returns buffered output for replay.
+
+    If the live PTY is gone but an on-disk transcript exists for this
+    pty_session_id, return the transcript as ``output`` with ``replay: True``.
+    """
     data = request.get_json(silent=True) or {}
     session_id = data.get("session_id", "")
 
     sess = _get_session(session_id)
     if not sess or sess.get("exited"):
+        # Replay fallback: look up transcript.log by pty_session_id
+        from coda_mcp import task_manager as _tm
+        tdir = _tm.find_task_dir_by_pty_session(session_id)
+        if tdir:
+            transcript = os.path.join(tdir, "transcript.log")
+            if os.path.isfile(transcript):
+                try:
+                    with open(transcript, "rb") as f:
+                        content = f.read()
+                    return jsonify({
+                        "session_id": session_id,
+                        "label": "hermes-mcp (replay)",
+                        "output": [content.decode("utf-8", errors="replace")],
+                        "replay": True,
+                        "process": None,
+                        "created_at": None,
+                    })
+                except OSError:
+                    pass
         return jsonify({"error": "Session not found or exited"}), 404
 
-    # Reset idle clock so the 24h reaper starts fresh
+    # Existing live-attach path
     sess["last_poll_time"] = time.time()
 
     return jsonify({
