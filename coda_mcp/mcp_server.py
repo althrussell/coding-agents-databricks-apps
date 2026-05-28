@@ -411,7 +411,7 @@ async def coda_interactive(
     except Exception as e:
         return json.dumps({
             "status": "error",
-            "error": f"Workspace path not found: {workspace_path}: {e}",
+            "error": f"Workspace path not found ({workspace_path}): {e}",
         })
 
     if not _is_directory(status):
@@ -421,7 +421,7 @@ async def coda_interactive(
         })
 
     # Create PTY FIRST so we have its session_id for the project_dir name.
-    if _app_create_session is None:
+    if _app_create_session is None or _app_send_input is None:
         return json.dumps({
             "status": "error",
             "error": "PTY hook not wired",
@@ -459,11 +459,6 @@ async def coda_interactive(
             })
 
         # cd into the project dir.
-        if _app_send_input is None:
-            return json.dumps({
-                "status": "error",
-                "error": "PTY send hook not wired",
-            })
         _app_send_input(pty_session_id, f"cd {shlex.quote(project_dir)}\n")
 
         # Launch the agent.
