@@ -59,13 +59,14 @@ mcp = FastMCP(
         "CHAINING: pass previous_session_id from a completed task's session_id "
         "to give the new task context of what was done before.\n\n"
         "SHARE THE REPLAY URL: When coda_run returns a viewer_url field (non-null), "
-        "mention it to the user in plain text (e.g. \"you can review the transcript "
-        "at <url>\"). The URL is a read-only static replay of the agent's session — "
-        "what was prompted, what was reasoned, what was produced — and remains valid "
-        "indefinitely after the task completes. It is safe to share: it points to "
-        "the same Databricks App the user is already authenticated against. Do this "
-        "on the first mention of the task and any time the user asks where the task "
-        "is or how to see what it did."
+        "mention it to the user in plain text (e.g. \"you can view the session replay "
+        "at <url>\"). The URL is a read-only static replay showing the prompt, the "
+        "agent's work, and the final output. It reflects the task's progress while "
+        "running, then the full transcript once it completes — and remains valid "
+        "indefinitely after that. It is safe to share: it points to the same "
+        "Databricks App the user is already authenticated against. Do this on the "
+        "first mention of the task and any time the user asks where the task is or "
+        "how to see what it did."
     ),
     stateless_http=True,
     json_response=True,
