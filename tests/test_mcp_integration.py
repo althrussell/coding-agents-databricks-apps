@@ -341,6 +341,12 @@ def test_end_to_end_grace_and_replay(tmp_path, monkeypatch):
         sessions,
     )
 
+    # Disable the watcher thread so the test's manual orchestration
+    # (write result.json + call _schedule_deferred_close) is the sole driver.
+    # The watcher otherwise races with the manual orchestration on a
+    # 5-second poll cycle and produces SessionNotFoundError.
+    monkeypatch.setattr(mcp_server, "_watch_task", lambda *a, **kw: None)
+
     mcp_server.set_app_hooks(
         mcp_create_pty_session,
         mcp_send_input,
