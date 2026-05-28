@@ -28,7 +28,7 @@ from mcp.types import ToolAnnotations
 
 from coda_mcp import task_manager
 from coda_mcp import url_builder
-from coda_mcp.workspace_export import export_workspace_tree
+from coda_mcp.workspace_export import export_workspace_tree, _is_directory
 
 try:
     from databricks.sdk import WorkspaceClient
@@ -370,20 +370,21 @@ _AGENT_LAUNCH_CMDS = {
 async def coda_interactive(
     prompt: str,
     workspace_path: str,
-    branch: str = "",
     agent: str = "claude",
     email: str = "",
 ) -> str:
     """Launch an interactive agent session in CoDA, handed off via a viewer URL.
 
-    The MCP caller passes a Databricks Workspace Git Folder path; Coda exports
-    its file tree, launches the chosen agent (claude default) in that directory,
-    auto-types ``prompt`` as the first user input, and returns a ``viewer_url``
-    the calling user opens in a browser to drive the session.
+    The MCP caller passes a Databricks Workspace directory path (a Git Folder
+    or a plain Workspace folder — either works). Coda exports its file tree,
+    launches the chosen agent (claude default) in that directory, auto-types
+    ``prompt`` as the first user input, and returns a ``viewer_url`` the
+    calling user opens in a browser to drive the session.
 
-    Pre-condition: ``workspace_path`` must be a Databricks Workspace Git Folder
-    and any in-progress changes must have been committed and pushed to its
-    remote before this call. The export reflects the committed HEAD state.
+    Pre-condition: ``workspace_path`` must point to a directory that already
+    exists in the Databricks Workspace. If the directory is a Git Folder and
+    the caller wants a specific branch checked out, they must do that
+    themselves before calling — the export is a server-side snapshot.
 
     Interactive sessions do NOT appear in ``coda_inbox`` and ``coda_get_result``
     will not return anything for them. The viewer URL is the only handle.
@@ -396,7 +397,6 @@ async def coda_interactive(
             "error": f"Unknown agent: {agent!r}. Allowed: {sorted(_ALLOWED_AGENTS)}",
         })
 
-    # Resolve the Git Folder by listing under the workspace_path prefix.
     if WorkspaceClient is None:
         return json.dumps({
             "status": "error",
@@ -405,30 +405,20 @@ async def coda_interactive(
 
     client = WorkspaceClient()
 
+    # Validate that the path exists and is a directory.
     try:
-        repos = list(client.repos.list(path_prefix=workspace_path))
+        status = client.workspace.get_status(workspace_path)
     except Exception as e:
         return json.dumps({
             "status": "error",
-            "error": f"Failed to list Git Folders: {e}",
+            "error": f"Workspace path not found: {workspace_path}: {e}",
         })
 
-    repo = next((r for r in repos if r.path == workspace_path), None)
-    if repo is None:
+    if not _is_directory(status):
         return json.dumps({
             "status": "error",
-            "error": f"No Git Folder found at {workspace_path}",
+            "error": f"Workspace path is not a directory: {workspace_path}",
         })
-
-    # Optional branch update.
-    if branch:
-        try:
-            client.repos.update(repo_id=repo.id, branch=branch)
-        except Exception as e:
-            return json.dumps({
-                "status": "error",
-                "error": f"Failed to update Git Folder to branch {branch!r}: {e}",
-            })
 
     # Create PTY FIRST so we have its session_id for the project_dir name.
     if _app_create_session is None:
@@ -492,7 +482,6 @@ async def coda_interactive(
             "agent": agent,
             "project_dir": project_dir,
             "workspace_path": workspace_path,
-            "branch": branch,
             "instructions": (
                 "Open viewer_url to attach. The agent is loaded with the "
                 "project files exported from Workspace and your kickoff "
