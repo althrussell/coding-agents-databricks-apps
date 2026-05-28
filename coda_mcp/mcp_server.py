@@ -75,7 +75,22 @@ mcp = FastMCP(
         "indefinitely after that. It is safe to share: it points to the same "
         "Databricks App the user is already authenticated against. Do this on the "
         "first mention of the task and any time the user asks where the task is or "
-        "how to see what it did."
+        "how to see what it did.\n\n"
+        "INTERACTIVE HANDOFF (coda_interactive): When the user wants a human to "
+        "drive a coding agent in CoDA — not autonomous execution — call "
+        "coda_interactive instead of coda_run. The user's project must be a "
+        "Databricks Workspace Git Folder, and any in-progress changes must be "
+        "committed and pushed to the Git Folder's remote BEFORE the call. The tool "
+        "exports the committed HEAD state into a Coda-local directory, launches "
+        "the chosen agent (claude default; also hermes, codex, gemini, opencode), "
+        "and types the prompt as the first user input. The return shape includes "
+        "a viewer_url the user opens to attach — share it immediately in plain "
+        "text; it is the only handle to the session, and the user drives it until "
+        "they exit. Interactive sessions do NOT appear in coda_inbox, and "
+        "coda_get_result returns nothing for them — do not try to poll or fetch "
+        "results. Note that git history is NOT available inside the session "
+        "(files-only export); if the user needs history context, include a git "
+        "log summary in the prompt string."
     ),
     stateless_http=True,
     json_response=True,

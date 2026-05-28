@@ -6,9 +6,9 @@ SDK Streamable HTTP transport at /mcp. This module is a Flask-native
 JSON-RPC fallback used only under WSGI runtimes (gunicorn local dev,
 tests that exercise the Flask test client without spinning up ASGI).
 
-Both paths expose the same three tools (coda_run, coda_inbox,
-coda_get_result) and produce equivalent JSON-RPC responses, so switching
-between them is transparent to MCP clients.
+Both paths expose the same four tools (coda_run, coda_inbox,
+coda_get_result, coda_interactive) and produce equivalent JSON-RPC responses,
+so switching between them is transparent to MCP clients.
 """
 import asyncio
 import json
