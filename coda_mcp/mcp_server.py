@@ -289,6 +289,7 @@ async def coda_run(
             pty_session_id = _app_create_session(
                 label="hermes-mcp",
                 transcript_path=transcript_path,
+                replay_only=True,   # coda_run URLs are post-hoc review only
             )
             task_manager._update_session_field(
                 session_id, "pty_session_id", pty_session_id
