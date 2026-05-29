@@ -361,11 +361,17 @@ _ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
 # hardcoded sleep that didn't adapt to slow agent cold-starts.
 _PROMPT_SEED_MAX_WAIT_S = 5.0
 _PROMPT_SEED_STABILITY_S = 1.0
-# Terminal-side `databricks workspace export-dir` pull (coda_interactive). Generous
-# budget — export-dir prints per-file, so output keeps growing during an active
-# pull and won't prematurely stabilize.
-_EXPORT_MAX_WAIT_S = 120.0
-_EXPORT_STABILITY_S = 1.5
+# Terminal-side `databricks workspace export-dir` pull (coda_interactive). We wait
+# for an explicit shell completion marker, NOT for output to go quiet: the
+# databricks CLI cold-starts SILENTLY for ~2s before writing any files, so an
+# output-quiet heuristic declares "done" too early and the disk check finds
+# nothing. The pull command's tail echoes one of these tokens; they are built
+# from split string literals in the command (echo "CODA""_PULL_""OK") so the
+# contiguous form here appears ONLY when the echo executes — never in the
+# shell's echo of the typed command line.
+_PULL_MAX_WAIT_S = 60.0
+_PULL_OK = "CODA_PULL_OK"
+_PULL_FAIL = "CODA_PULL_FAIL"
 
 
 async def _wait_for_output_stable(
@@ -404,6 +410,44 @@ async def _wait_for_agent_ready(pty_session_id: str) -> None:
     await _wait_for_output_stable(
         pty_session_id, _PROMPT_SEED_MAX_WAIT_S, _PROMPT_SEED_STABILITY_S
     )
+
+
+def _buffer_text(chunks) -> str:
+    """Decode a PTY output_buffer (list of bytes/str chunks) into one string."""
+    parts = []
+    for c in chunks:
+        parts.append(c.decode("utf-8", "replace") if isinstance(c, (bytes, bytearray)) else str(c))
+    return "".join(parts)
+
+
+async def _wait_for_pull(pty_session_id: str, target_dir: str) -> str:
+    """Wait for the terminal-side export-dir pull to finish. Returns 'ok'/'fail'/'timeout'.
+
+    Watches the PTY output for the explicit completion marker echoed by the pull
+    command's ``&& echo OK || echo FAIL`` tail — robust against the databricks
+    CLI's silent cold-start (a "wait for output to go quiet" heuristic fires
+    during that silence, before any files exist). On the OK marker we also
+    confirm the files actually landed on disk.
+    """
+    from app import sessions
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _PULL_MAX_WAIT_S
+    poll_interval = 0.2
+
+    while loop.time() < deadline:
+        await asyncio.sleep(poll_interval)
+        sess = sessions.get(pty_session_id)
+        if sess is None:
+            return "fail"
+        text = _buffer_text(sess.get("output_buffer", []))
+        if _PULL_OK in text:
+            if os.path.isdir(target_dir) and os.listdir(target_dir):
+                return "ok"
+            # Marker present but no files — treat as failure (shouldn't happen).
+            return "fail"
+        if _PULL_FAIL in text:
+            return "fail"
+    return "timeout"
 
 
 _AGENT_LAUNCH_CMDS = {
@@ -475,24 +519,28 @@ async def coda_interactive(
         name = _safe_dirname(workspace_path)
         source_path = _normalize_workspace_path(workspace_path)
 
+        target_dir = os.path.join(project_dir, name)
+
         # Pull the Workspace folder into ./<name> AS THE USER (terminal creds).
-        # A failed export-dir short-circuits the && chain, leaving <name> absent;
-        # the filesystem check below turns that into a real error.
+        # The tail echoes a completion marker so we detect success/failure WITHOUT
+        # relying on output timing — the databricks CLI cold-starts silently for
+        # ~2s before writing files, so a "wait for output to go quiet" heuristic
+        # races it and checks the disk too early. The marker tokens are split
+        # across string literals (echo "CODA""_PULL_""OK") so their contiguous
+        # form appears in the PTY output ONLY when the echo runs, never in the
+        # shell's echo of the typed command line. A failed export-dir
+        # short-circuits the && chain, so OK never prints and || echoes FAIL.
         pull_cmd = (
             f"cd {shlex.quote(project_dir)} && "
             f"databricks workspace export-dir {shlex.quote(source_path)} "
             f"{shlex.quote('./' + name)} && "
-            f"cd {shlex.quote(name)}"
+            f"cd {shlex.quote(name)} "
+            f'&& echo "CODA""_PULL_""OK" || echo "CODA""_PULL_""FAIL"'
         )
         _app_send_input(pty_session_id, pull_cmd + "\n")
 
-        # Wait for the pull to finish (shell goes idle), then verify on disk.
-        await _wait_for_output_stable(
-            pty_session_id, _EXPORT_MAX_WAIT_S, _EXPORT_STABILITY_S
-        )
-
-        target_dir = os.path.join(project_dir, name)
-        if not os.path.isdir(target_dir) or not os.listdir(target_dir):
+        outcome = await _wait_for_pull(pty_session_id, target_dir)
+        if outcome != "ok":
             if _app_close_session is not None:
                 try:
                     _app_close_session(pty_session_id)
@@ -500,13 +548,19 @@ async def coda_interactive(
                     pass
             if os.path.isdir(project_dir):
                 shutil.rmtree(project_dir, ignore_errors=True)
-            return json.dumps({
-                "status": "error",
-                "error": (
-                    f"No files were pulled from {workspace_path}. Check the path "
-                    f"exists in the Workspace and that you have read access."
-                ),
-            })
+            if outcome == "timeout":
+                msg = (
+                    f"Timed out pulling files from {workspace_path} after "
+                    f"{int(_PULL_MAX_WAIT_S)}s — the export may be very large or "
+                    f"`databricks workspace export-dir` is hung."
+                )
+            else:
+                msg = (
+                    f"Failed to pull files from {workspace_path}. Check the path "
+                    f"exists in the Workspace and that you have read access "
+                    f"(ran `databricks workspace export-dir`)."
+                )
+            return json.dumps({"status": "error", "error": msg})
 
         # Launch the agent (fresh — same proven path as before).
         launch_cmd = _AGENT_LAUNCH_CMDS[agent]

@@ -15,41 +15,33 @@ ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
 def wired(monkeypatch, tmp_path):
     """Wire PTY hooks with recording mocks; HOME -> tmp so project_dir is sandboxed.
 
-    The ``_app_send_input`` mock simulates a SUCCESSFUL ``export-dir`` by creating
-    the target dir + a file when it sees the pull command. Tests that want the
-    failure path set ``state["simulate_pull"] = False``.
+    ``_wait_for_pull`` is mocked to return ``state["pull_outcome"]`` (default
+    "ok"); tests override it to exercise the failure / timeout paths.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     inputs: list[str] = []
-    state = {"pty_id": "pty-abc123", "simulate_pull": True, "closed": []}
+    state = {"pty_id": "pty-abc123", "pull_outcome": "ok", "closed": []}
 
     def fake_create(label, replay_only=False, **kw):
         return state["pty_id"]
 
     def fake_send(pty_id, text):
         inputs.append(text)
-        # Simulate export-dir landing files on disk for the success path.
-        if state["simulate_pull"] and "export-dir" in text:
-            project_dir = os.path.join(
-                os.path.expanduser("~/.coda/projects"), state["pty_id"]
-            )
-            name = text.rstrip().rsplit("cd ", 1)[-1].strip().strip("'\"")
-            target = os.path.join(project_dir, name)
-            os.makedirs(target, exist_ok=True)
-            with open(os.path.join(target, "README.md"), "w") as f:
-                f.write("# hi")
 
     def fake_close(pty_id):
         state["closed"].append(pty_id)
 
-    async def fake_wait(*a, **kw):
+    async def fake_wait_pull(pty_id, target_dir):
+        return state["pull_outcome"]
+
+    async def fake_agent_ready(*a, **kw):
         return None
 
     monkeypatch.setattr(mcp_server, "_app_create_session", fake_create)
     monkeypatch.setattr(mcp_server, "_app_send_input", fake_send)
     monkeypatch.setattr(mcp_server, "_app_close_session", fake_close)
-    monkeypatch.setattr(mcp_server, "_wait_for_output_stable", fake_wait)
-    monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", fake_wait)
+    monkeypatch.setattr(mcp_server, "_wait_for_pull", fake_wait_pull)
+    monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", fake_agent_ready)
     monkeypatch.setattr(
         mcp_server.url_builder, "build_viewer_url", lambda pid: f"https://viewer/{pid}"
     )
@@ -70,7 +62,26 @@ async def test_pull_command_is_sent_first(wired):
     assert "/Users/x@y.com/WAM" in first          # /Workspace prefix stripped
     assert "/Workspace/Users" not in first
     assert "./WAM" in first
-    assert first.rstrip().endswith("WAM")          # final `cd <name>`
+    assert "&& cd " in first                        # cd into the pulled dir
+    assert "echo " in first                         # completion-marker tail present
+
+
+@pytest.mark.asyncio
+async def test_pull_marker_not_literal_in_command(wired):
+    """CRITICAL: the contiguous marker tokens must NOT appear in the typed command.
+
+    The shell echoes the command line back into the PTY output buffer. If the
+    contiguous token were present in the command, the wait would match it from
+    the echo and declare success before export-dir ran. The command builds the
+    tokens from split string literals, so only their split form is typed.
+    """
+    inputs, _ = wired
+    await mcp_server.coda_interactive(
+        prompt="x", workspace_path="/Users/x/WAM", agent="claude"
+    )
+    pull = inputs[0]
+    assert mcp_server._PULL_OK not in pull, f"contiguous OK token leaked into command: {pull!r}"
+    assert mcp_server._PULL_FAIL not in pull, f"contiguous FAIL token leaked into command: {pull!r}"
 
 
 @pytest.mark.asyncio
@@ -91,20 +102,34 @@ async def test_prompt_seeded_with_context_line(wired):
     seeded = inputs[-1]
     assert "/Users/x/WAM" in seeded
     assert "DO THE THING" in seeded
-    assert "Workspace" in seeded                                    # precondition (clean fail, not ValueError)
+    assert "Workspace" in seeded                                     # precondition (clean fail, not ValueError)
     assert seeded.index("Workspace") < seeded.index("DO THE THING")  # context precedes prompt
 
 
 @pytest.mark.asyncio
-async def test_empty_pull_returns_error_and_no_launch(wired):
+async def test_pull_failure_returns_error_and_no_launch(wired):
     inputs, state = wired
-    state["simulate_pull"] = False  # export-dir produces nothing
+    state["pull_outcome"] = "fail"
     out = json.loads(await mcp_server.coda_interactive(
         prompt="go", workspace_path="/Users/x/WAM", agent="claude"
     ))
     assert out["status"] == "error"
+    assert "Failed to pull" in out["error"]
     assert state["closed"] == [state["pty_id"]]              # PTY closed
     assert not any(t.strip() == "claude" for t in inputs)    # agent NOT launched
+
+
+@pytest.mark.asyncio
+async def test_pull_timeout_returns_error(wired):
+    inputs, state = wired
+    state["pull_outcome"] = "timeout"
+    out = json.loads(await mcp_server.coda_interactive(
+        prompt="go", workspace_path="/Users/x/WAM", agent="claude"
+    ))
+    assert out["status"] == "error"
+    assert "Timed out" in out["error"]
+    assert state["closed"] == [state["pty_id"]]
+    assert not any(t.strip() == "claude" for t in inputs)
 
 
 @pytest.mark.asyncio
@@ -162,6 +187,63 @@ def test_no_workspaceclient_in_module():
     assert "workspace.get_status(" not in src
 
 
+# ── _wait_for_pull behavior (real helper, fake sessions buffer) ───────
+
+
+@pytest.mark.asyncio
+async def test_wait_for_pull_ok_with_files(monkeypatch, tmp_path):
+    from app import sessions
+    sid = "pty-pull-ok"
+    target = tmp_path / "WAM"
+    target.mkdir()
+    (target / "README.md").write_text("# hi")
+    sessions[sid] = {"output_buffer": [b"Exporting...\n", (mcp_server._PULL_OK + "\n").encode()]}
+    try:
+        out = await mcp_server._wait_for_pull(sid, str(target))
+        assert out == "ok"
+    finally:
+        sessions.pop(sid, None)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_pull_ok_marker_but_no_files_is_fail(monkeypatch, tmp_path):
+    from app import sessions
+    sid = "pty-pull-okempty"
+    target = tmp_path / "WAM"  # never created
+    sessions[sid] = {"output_buffer": [(mcp_server._PULL_OK + "\n").encode()]}
+    try:
+        assert await mcp_server._wait_for_pull(sid, str(target)) == "fail"
+    finally:
+        sessions.pop(sid, None)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_pull_fail_marker(monkeypatch, tmp_path):
+    from app import sessions
+    sid = "pty-pull-fail"
+    sessions[sid] = {"output_buffer": [b"ERROR: nope\n", (mcp_server._PULL_FAIL + "\n").encode()]}
+    try:
+        assert await mcp_server._wait_for_pull(sid, str(tmp_path / "WAM")) == "fail"
+    finally:
+        sessions.pop(sid, None)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_pull_split_echo_does_not_false_trigger(monkeypatch, tmp_path):
+    """The split-literal command echo must NOT be read as the success marker."""
+    from app import sessions
+    sid = "pty-pull-splitecho"
+    # This is what the shell echoes when the command line is typed — the SPLIT form.
+    echoed_command = 'cd /x && databricks workspace export-dir /Users/x/WAM ./WAM && cd WAM && echo "CODA""_PULL_""OK" || echo "CODA""_PULL_""FAIL"\n'
+    sessions[sid] = {"output_buffer": [echoed_command.encode()]}
+    monkeypatch.setattr(mcp_server, "_PULL_MAX_WAIT_S", 0.5)  # keep the test fast
+    try:
+        # Only the split echo is present (no executed contiguous token) -> timeout.
+        assert await mcp_server._wait_for_pull(sid, str(tmp_path)) == "timeout"
+    finally:
+        sessions.pop(sid, None)
+
+
 # ── preserved signature / contract guards ────────────────────────────
 
 
@@ -179,10 +261,8 @@ def test_instructions_drop_stale_export_wording_and_keep_contract():
     """Server-level MCP instructions: no stale server-side export claim; contract intact."""
     txt = mcp_server.mcp.instructions
     lowered = txt.lower()
-    # Stale server-side export wording is gone; real mechanism named.
     assert "server-side snapshot" not in txt
     assert "export-dir" in txt
-    # Still-valid broadened contract: plain folders accepted + upload-first pattern.
     assert "coda_interactive" in txt
     assert (
         "git folder or" in lowered
