@@ -421,7 +421,9 @@ def test_create_task_forwards_workflow_protocol_to_wrap_prompt(monkeypatch, tmp_
     monkeypatch.setattr(task_manager, "wrap_prompt", fake_wrap_prompt)
     monkeypatch.setattr(task_manager, "_session_dir", lambda sid: str(tmp_path))
     monkeypatch.setattr(task_manager, "_task_dir", lambda sid, tid: str(tmp_path))
-    monkeypatch.setattr(task_manager, "_write_task_meta", lambda *a, **kw: None)
+    # _write_json is the real helper used inside create_task (writes meta.json + session file).
+    # Stub it out — we're testing flag pass-through, not filesystem behavior.
+    monkeypatch.setattr(task_manager, "_write_json", lambda *a, **kw: None)
     monkeypatch.setattr(task_manager.os, "makedirs", lambda *a, **kw: None)
     # Stub the file-open for prompt.txt write.
     real_open = open
@@ -713,7 +715,7 @@ Expected: All 6 new tests PASS.
 Also run the full target file plus the new module's tests to check no regression:
 
 ```
-uv run pytest tests/test_databricks_preamble.py tests/test_task_manager.py tests/test_coda_interactive.py -v
+uv run pytest tests/test_databricks_preamble.py tests/test_task_manager.py tests/test_coda_interactive.py tests/test_mcp_server.py tests/test_replay_only_flag.py -v
 ```
 
 Expected: All pass. If any fail, fix the implementation (not the tests).
@@ -1026,7 +1028,7 @@ Expected: 3 passed.
 
 - [ ] **Step 7: Run target-area tests to verify no regression**
 
-Run: `uv run pytest tests/test_inbox_status_passthrough.py tests/test_coda_interactive.py tests/test_databricks_preamble.py tests/test_task_manager.py -v`
+Run: `uv run pytest tests/test_inbox_status_passthrough.py tests/test_coda_interactive.py tests/test_databricks_preamble.py tests/test_task_manager.py tests/test_mcp_server.py tests/test_replay_only_flag.py -v`
 Expected: all pass.
 
 - [ ] **Step 8: Ruff**
