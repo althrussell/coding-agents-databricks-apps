@@ -183,6 +183,20 @@ If at any phase you cannot proceed, use the INFO_NEEDED escape hatch:
 If you encounter a hard, unrecoverable failure (a command crashed, an SDK
 returned 500, a file is corrupt), use status="failed" with a description
 in "errors".
+
+DISAMBIGUATION — two soft statuses already exist and they mean different
+things; use the right one:
+- "info_needed" — the CALLER must add missing context (table name,
+  business decision, file contents, access grant) before the task can
+  proceed. Used when ambiguity or missing input blocks you.
+- "needs_approval" — you have a concrete plan to do something destructive
+  (drop a table, delete a job, modify permissions). You will execute it
+  if and only if the caller explicitly approves. Used at the SAFETY
+  boundary, never for ambiguity. See SAFETY section below.
+
+If both apply (e.g. "I'd drop a table but I'm not sure which one"), prefer
+"info_needed" — resolving the ambiguity first is cheaper than approving
+the wrong destructive action.
 ```
 
 ### 4. Expanded `INSTRUCTIONS:` content
@@ -215,14 +229,60 @@ When `status="info_needed"`, the `feedback` field is REQUIRED and must be a stri
 
 `coda_run` gains `workflow_protocol: bool = True` parameter, passed straight through to `create_task`. The tool's docstring is updated to mention the parameter and its effect.
 
-### 7. Inbox / result surfacing changes
+### 7. Inbox / result surfacing changes (REQUIRED — was previously deferred)
 
-`coda_inbox` and `coda_get_result` already echo whatever `status` appears in `result.json`. They need to TOLERATE `"info_needed"` and, ideally, surface it visibly:
+The current `coda_inbox` implementation at `coda_mcp/mcp_server.py:551` has a HARDCODED counts dict:
 
-- `coda_inbox` adds `info_needed` to any existing status filter or display logic. If there is per-status formatting in the response, add a case.
-- `coda_get_result` passes through the new `feedback` field as-is — it should already do this because the function returns the full result.json content.
+```python
+counts = {"running": 0, "completed": 0, "failed": 0}
+```
 
-**Verification approach:** read the current `coda_inbox` / `coda_get_result` implementations in `task_manager.py` and `mcp_server.py`. If they're status-agnostic pass-throughs, no change is needed beyond a regression test.
+Tasks with `status="info_needed"` or `status="needs_approval"` would appear in the `tasks` list but the counts summary would show 0/0/0 — visibly broken. This must be fixed:
+
+```python
+counts = {
+    "running": 0,
+    "completed": 0,
+    "failed": 0,
+    "info_needed": 0,
+    "needs_approval": 0,
+}
+for t in tasks:
+    s = t.get("status", "")
+    if s in counts:
+        counts[s] += 1
+    elif s == "done":
+        counts["completed"] += 1
+    elif s == "timeout":
+        counts["failed"] += 1
+```
+
+The `coda_get_result` docstring at `mcp_server.py:579` says:
+> Call this AFTER coda_inbox shows a task as "completed" or "failed".
+
+Must be updated to:
+> Call this AFTER coda_inbox shows a task as "completed", "failed", "info_needed", or "needs_approval".
+
+And the response should pass through the new `feedback` field (and the existing schema fields) verbatim — `task_manager.get_task_result` already returns the full result.json content, so no code change there beyond a regression test.
+
+### 7a. MCP `instructions` string update (REQUIRED)
+
+The server-level instructions block at `coda_mcp/mcp_server.py:52-99` is the document that teaches upstream LLM callers how to use these tools. Currently it says nothing about `info_needed`. Add a new paragraph (placed after the CHAINING paragraph at line 68):
+
+```
+INFO_NEEDED HANDOFF: When coda_inbox shows a task with status='info_needed',
+the agent could not proceed because of missing context. Call
+coda_get_result to read the 'feedback' field — it tells you exactly what
+the agent needs (a table name, a decision, a clarification). Add that
+context to the prompt and resubmit via coda_run with previous_session_id
+set to the original task's session_id so the agent has the prior attempt's
+context. 'needs_approval' is similar but means the agent has a destructive
+plan and is waiting for the caller's explicit go/no-go.
+```
+
+### 7b. `_watch_task` interaction (sanity, no change required)
+
+`_watch_task` in `mcp_server.py:134` polls for `result.json` and calls `task_manager.complete_task(session_id, task_id)` as soon as it appears. This is correct for all three terminal statuses: from a session-lifecycle perspective, a task that wrote a result.json IS done, regardless of whether the status is `completed`, `failed`, `info_needed`, or `needs_approval`. The session can be auto-closed; the status is preserved in result.json for the caller to read. No code change needed — but document this so the implementer doesn't second-guess.
 
 ---
 
@@ -281,7 +341,7 @@ When `status="info_needed"`, the `feedback` field is REQUIRED and must be a stri
 | `test_workflow_protocol_lists_three_phases` | Contains "PHASE 1 — PLAN", "PHASE 2 — EXECUTE", "PHASE 3 — SYNTHESIZE" |
 | `test_workflow_protocol_caps_iterations_at_two` | Contains "Maximum 2" or "max 2" exactly 3 times (once per phase) |
 | `test_workflow_protocol_describes_info_needed` | Contains "info_needed" and "feedback" |
-| `test_skills_list_is_canonical` | `get_databricks_skills()` returns the documented 16 entries |
+| `test_skills_list_matches_claude_md` | Parse the "Databricks Skills" table from project CLAUDE.md; the set of skill names in that table must equal `set(get_databricks_skills())`. Catches drift in either direction (skill added to CLAUDE.md but not to the tuple, or vice versa). |
 
 ### `tests/test_task_manager.py` (extend)
 
@@ -301,12 +361,15 @@ When `status="info_needed"`, the `feedback` field is REQUIRED and must be a stri
 | `test_coda_run_signature_has_workflow_protocol_param` | Inspect signature, default True |
 | `test_coda_run_passes_workflow_protocol_to_create_task` | Monkeypatch create_task, assert kwarg received |
 
-### `tests/test_inbox_status_passthrough.py` (new, light)
+### `tests/test_inbox_status_passthrough.py` (new)
 
 | Test | What it pins |
 |------|--------------|
-| `test_inbox_surfaces_info_needed_status` | Build a fake result.json with status="info_needed" and feedback="..." in a tmp results dir; call the inbox function; assert the new status comes through verbatim |
-| `test_get_result_surfaces_feedback_field` | Same fixture; call coda_get_result; assert feedback field passes through |
+| `test_inbox_counts_dict_includes_info_needed_and_needs_approval` | Construct fake tasks with status="info_needed" and status="needs_approval"; call `coda_inbox`; assert counts dict contains both keys with correct values |
+| `test_inbox_surfaces_info_needed_status` | Build a fake result.json with status="info_needed" and feedback="..." in a tmp results dir; call the inbox function; assert the new status comes through verbatim in the tasks list |
+| `test_get_result_surfaces_feedback_field` | Same fixture; call `coda_get_result`; assert feedback field passes through |
+| `test_mcp_instructions_mention_info_needed` | Read `mcp.instructions`; assert it contains "info_needed" and "needs_approval" |
+| `test_get_result_docstring_mentions_info_needed` | Inspect `coda_get_result.__doc__`; assert it lists `info_needed` and `needs_approval` alongside `completed` / `failed` |
 
 ---
 
@@ -325,7 +388,7 @@ When `status="info_needed"`, the `feedback` field is REQUIRED and must be a stri
 
 ## Risks
 
-1. **Token cost.** ~200 tokens of CAPABILITIES + ~400 tokens of WORKFLOW PROTOCOL = ~600 added tokens per task. Acceptable because the agent gets oriented and disciplined; the flag lets callers opt out.
+1. **Token cost.** Measured: CAPABILITIES ≈ 1050 chars (~260 tokens), WORKFLOW PROTOCOL ≈ 2280 chars (~570 tokens), plus an expanded INSTRUCTIONS section adds another ~100 tokens. Total: **~900 added tokens per task**. Acceptable because the agent gets oriented and disciplined; the flag lets callers opt out. (Earlier estimate of 600 was wrong — see spec history.)
 2. **Hermes ignores the protocol.** If hermes treats the prompt as suggestion rather than contract, the structured phases may not appear in `status.jsonl`. Mitigation: not in scope for this spec — first ship the prompt content and measure adoption.
 3. **Drift between hardcoded skill list and reality.** If skills are added/removed in CLAUDE.md, `_DATABRICKS_SKILLS` lies until updated. Mitigation: `test_skills_list_is_canonical` makes drift visible by failing.
 4. **Critique loops eating tokens.** Max 2 iterations per phase is explicit in the protocol text. Mitigation built into the spec.
