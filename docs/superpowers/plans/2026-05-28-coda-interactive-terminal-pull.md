@@ -252,7 +252,15 @@ async def test_prompt_seeded_with_context_line(wired):
     seeded = inputs[-1]
     assert "/Users/x/WAM" in seeded
     assert "DO THE THING" in seeded
-    assert seeded.index("Workspace") < seeded.index("DO THE THING")  # context precedes prompt
+    assert "Workspace" in seeded                                       # precondition (clean fail, not ValueError)
+    assert seeded.index("Workspace") < seeded.index("DO THE THING")    # context precedes prompt
+
+
+def test_instructions_drop_stale_export_wording():
+    """Server-level MCP instructions must not claim the deleted server-side export."""
+    txt = mcp_server.mcp.instructions
+    assert "server-side snapshot" not in txt
+    assert "export-dir" in txt        # describes the real terminal-side pull mechanism
 
 
 @pytest.mark.asyncio
@@ -448,6 +456,25 @@ def test_no_workspaceclient_in_module():
     Allowed agents: claude (default), hermes, codex, gemini, opencode.
     """
 ```
+
+- [ ] **Step 4b: Update the server-level `mcp.instructions` blob** (lines ~95-98) so it no longer claims the deleted server-side export. Replace the exact substring:
+
+```
+"Folder, ensure the desired branch is checked out and pushed first — "
+"the export is a server-side snapshot. The tool exports the directory "
+"into a Coda-local working directory, launches the chosen agent "
+```
+
+with:
+
+```
+"Folder, ensure the desired branch is checked out first — "
+"the pull is a point-in-time snapshot. The tool copies the directory "
+"into a Coda-local working directory using your credentials (via "
+"`databricks workspace export-dir`), launches the chosen agent "
+```
+
+This keeps the caller-facing contract (pass `workspace_path`, files-only, no git history) but stops describing a mechanism that no longer exists. Guarded by `test_instructions_drop_stale_export_wording`.
 
 - [ ] **Step 5: Remove the dead export imports.** In `coda_mcp/mcp_server.py` line 31, delete:
 
