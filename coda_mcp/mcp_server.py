@@ -458,6 +458,16 @@ _AGENT_LAUNCH_CMDS = {
     "opencode": "opencode",
 }
 
+# Agents that launch INTERACTIVELY with an auto-accept flag (no trust/permission
+# dialog) and the kickoff prompt as a positional arg. For these, coda_interactive
+# launches in one atomic command — no separate prompt-seeding, no TUI-ready wait.
+# claude launches in a fresh per-session dir each time, which would otherwise trip
+# its per-directory folder-trust dialog and swallow the prompt. Agents not listed
+# fall back to launch -> wait-for-ready -> type the prompt.
+_AGENT_AUTO_LAUNCH = {
+    "claude": "claude --enable-auto-mode",
+}
+
 
 @mcp.tool(
     annotations=ToolAnnotations(
@@ -562,18 +572,28 @@ async def coda_interactive(
                 )
             return json.dumps({"status": "error", "error": msg})
 
-        # Launch the agent (fresh — same proven path as before).
-        launch_cmd = _AGENT_LAUNCH_CMDS[agent]
-        _app_send_input(pty_session_id, launch_cmd + "\n")
-
-        # Wait for the agent TUI to settle, then paste the kickoff prompt with a
-        # context line naming the source so the agent knows where files came from.
-        await _wait_for_agent_ready(pty_session_id)
+        # Kickoff prompt with a one-line context prefix naming the source. Kept
+        # to ONE line so it is safe both as a quoted CLI arg and as typed input
+        # (an embedded newline inside a quote would trigger shell line-continuation).
         seeded_prompt = (
-            f"Your working directory contains files exported from the Databricks "
-            f"Workspace path {workspace_path}.\n\n{prompt}"
+            f"Your working directory holds files exported from the Databricks "
+            f"Workspace path {workspace_path}. {prompt}"
         )
-        _app_send_input(pty_session_id, seeded_prompt + "\n")
+
+        # Launch the agent. Agents in _AGENT_AUTO_LAUNCH accept an auto-accept
+        # flag + the prompt as a positional arg, so we launch in ONE atomic
+        # command: no trust/permission dialog blocks the handoff, and the prompt
+        # isn't subject to TUI cold-start timing. Other agents fall back to
+        # launch -> wait-for-ready -> type the prompt.
+        auto_launch = _AGENT_AUTO_LAUNCH.get(agent)
+        if auto_launch is not None:
+            _app_send_input(
+                pty_session_id, f"{auto_launch} {shlex.quote(seeded_prompt)}\n"
+            )
+        else:
+            _app_send_input(pty_session_id, _AGENT_LAUNCH_CMDS[agent] + "\n")
+            await _wait_for_agent_ready(pty_session_id)
+            _app_send_input(pty_session_id, seeded_prompt + "\n")
 
         viewer_url = url_builder.build_viewer_url(pty_session_id)
 

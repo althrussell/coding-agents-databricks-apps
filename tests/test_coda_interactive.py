@@ -85,12 +85,26 @@ async def test_pull_marker_not_literal_in_command(wired):
 
 
 @pytest.mark.asyncio
-async def test_agent_launches_after_successful_pull(wired):
+async def test_claude_launches_auto_mode_with_embedded_prompt(wired):
+    """claude launches in ONE command: --enable-auto-mode + the prompt as an arg.
+
+    No separate bare `claude` line and no separately-typed prompt — that avoids
+    the per-directory folder-trust dialog and the TUI cold-start timing.
+    """
     inputs, _ = wired
     await mcp_server.coda_interactive(
-        prompt="go", workspace_path="/Users/x/WAM", agent="claude"
+        prompt="go now", workspace_path="/Users/x/WAM", agent="claude"
     )
-    assert any(t.strip() == "claude" for t in inputs)
+    assert len(inputs) == 2, f"expected pull + atomic launch only; got {inputs!r}"
+    launch = inputs[1]
+    assert launch.startswith("claude --enable-auto-mode ")
+    assert "go now" in launch
+    assert "/Users/x/WAM" in launch                          # context prefix embedded
+    assert not any(t.strip() == "claude" for t in inputs)    # no bare claude launch
+
+
+def test_claude_in_auto_launch_map():
+    assert mcp_server._AGENT_AUTO_LAUNCH.get("claude") == "claude --enable-auto-mode"
 
 
 @pytest.mark.asyncio
@@ -164,15 +178,18 @@ async def test_pty_hook_not_wired(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent,cmd", [
-    ("claude", "claude"), ("hermes", "hermes chat"), ("codex", "codex"),
+    ("hermes", "hermes chat"), ("codex", "codex"),
     ("gemini", "gemini"), ("opencode", "opencode"),
 ])
-async def test_agent_matrix(wired, agent, cmd):
+async def test_fallback_agents_launch_then_type_prompt(wired, agent, cmd):
+    """Agents without an auto-launch entry launch bare, then the prompt is typed."""
     inputs, _ = wired
     await mcp_server.coda_interactive(
         prompt="go", workspace_path="/Users/x/WAM", agent=agent
     )
-    assert any(t.strip() == cmd for t in inputs)
+    assert any(t.strip() == cmd for t in inputs)             # bare launch present
+    assert inputs[-1].strip().endswith("go")                 # prompt typed last
+    assert "--enable-auto-mode" not in " ".join(inputs)      # not the claude path
 
 
 def test_no_blocking_sleep_in_source():
