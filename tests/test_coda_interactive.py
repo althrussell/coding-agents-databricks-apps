@@ -1,296 +1,228 @@
-"""Tests for the coda_interactive MCP tool."""
+"""Tests for coda_interactive — terminal-side workspace pull (no server-side export)."""
 import asyncio
+import inspect
 import json
 import os
+
+import pytest
+
+from coda_mcp import mcp_server
 
 ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
 
 
-async def _no_wait(*a, **kw):
-    """No-op replacement for _wait_for_agent_ready in tests."""
-    return None
+@pytest.fixture
+def wired(monkeypatch, tmp_path):
+    """Wire PTY hooks with recording mocks; HOME -> tmp so project_dir is sandboxed.
 
-
-def _make_dir_status():
-    """Build a DIRECTORY-typed workspace.get_status response.
-
-    Prefers the real ObjectType.DIRECTORY enum so the tests exercise the
-    primary _is_directory branch (enum match). Falls back to the plain
-    string when the SDK is not importable, which keeps the tests usable
-    in minimal environments.
+    The ``_app_send_input`` mock simulates a SUCCESSFUL ``export-dir`` by creating
+    the target dir + a file when it sees the pull command. Tests that want the
+    failure path set ``state["simulate_pull"] = False``.
     """
-    from unittest.mock import MagicMock
-    status = MagicMock()
-    try:
-        from databricks.sdk.service.workspace import ObjectType
-        status.object_type = ObjectType.DIRECTORY
-    except ImportError:
-        status.object_type = "DIRECTORY"
-    return status
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs: list[str] = []
+    state = {"pty_id": "pty-abc123", "simulate_pull": True, "closed": []}
+
+    def fake_create(label, replay_only=False, **kw):
+        return state["pty_id"]
+
+    def fake_send(pty_id, text):
+        inputs.append(text)
+        # Simulate export-dir landing files on disk for the success path.
+        if state["simulate_pull"] and "export-dir" in text:
+            project_dir = os.path.join(
+                os.path.expanduser("~/.coda/projects"), state["pty_id"]
+            )
+            name = text.rstrip().rsplit("cd ", 1)[-1].strip().strip("'\"")
+            target = os.path.join(project_dir, name)
+            os.makedirs(target, exist_ok=True)
+            with open(os.path.join(target, "README.md"), "w") as f:
+                f.write("# hi")
+
+    def fake_close(pty_id):
+        state["closed"].append(pty_id)
+
+    async def fake_wait(*a, **kw):
+        return None
+
+    monkeypatch.setattr(mcp_server, "_app_create_session", fake_create)
+    monkeypatch.setattr(mcp_server, "_app_send_input", fake_send)
+    monkeypatch.setattr(mcp_server, "_app_close_session", fake_close)
+    monkeypatch.setattr(mcp_server, "_wait_for_output_stable", fake_wait)
+    monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", fake_wait)
+    monkeypatch.setattr(
+        mcp_server.url_builder, "build_viewer_url", lambda pid: f"https://viewer/{pid}"
+    )
+    return inputs, state
 
 
-def test_coda_interactive_unknown_agent_returns_error():
-    """An agent value not in the allow-list returns status=error and lists allowed values."""
-    from coda_mcp import mcp_server
+# ── new contract: terminal-side pull ─────────────────────────────────
 
-    result_str = asyncio.run(mcp_server.coda_interactive(
-        prompt="hello",
-        workspace_path="/Workspace/Users/x/proj",
-        agent="vim",
+
+@pytest.mark.asyncio
+async def test_pull_command_is_sent_first(wired):
+    inputs, _ = wired
+    await mcp_server.coda_interactive(
+        prompt="analyze", workspace_path="/Workspace/Users/x@y.com/WAM", agent="claude"
+    )
+    first = inputs[0]
+    assert "databricks workspace export-dir" in first
+    assert "/Users/x@y.com/WAM" in first          # /Workspace prefix stripped
+    assert "/Workspace/Users" not in first
+    assert "./WAM" in first
+    assert first.rstrip().endswith("WAM")          # final `cd <name>`
+
+
+@pytest.mark.asyncio
+async def test_agent_launches_after_successful_pull(wired):
+    inputs, _ = wired
+    await mcp_server.coda_interactive(
+        prompt="go", workspace_path="/Users/x/WAM", agent="claude"
+    )
+    assert any(t.strip() == "claude" for t in inputs)
+
+
+@pytest.mark.asyncio
+async def test_prompt_seeded_with_context_line(wired):
+    inputs, _ = wired
+    await mcp_server.coda_interactive(
+        prompt="DO THE THING", workspace_path="/Users/x/WAM", agent="claude"
+    )
+    seeded = inputs[-1]
+    assert "/Users/x/WAM" in seeded
+    assert "DO THE THING" in seeded
+    assert "Workspace" in seeded                                    # precondition (clean fail, not ValueError)
+    assert seeded.index("Workspace") < seeded.index("DO THE THING")  # context precedes prompt
+
+
+@pytest.mark.asyncio
+async def test_empty_pull_returns_error_and_no_launch(wired):
+    inputs, state = wired
+    state["simulate_pull"] = False  # export-dir produces nothing
+    out = json.loads(await mcp_server.coda_interactive(
+        prompt="go", workspace_path="/Users/x/WAM", agent="claude"
     ))
-    result = json.loads(result_str)
-    assert result["status"] == "error"
-    assert "vim" in result["error"]
-    # Error message lists all allowed agents so the calling LLM can correct itself.
+    assert out["status"] == "error"
+    assert state["closed"] == [state["pty_id"]]              # PTY closed
+    assert not any(t.strip() == "claude" for t in inputs)    # agent NOT launched
+
+
+@pytest.mark.asyncio
+async def test_happy_path_returns_launched(wired):
+    out = json.loads(await mcp_server.coda_interactive(
+        prompt="go", workspace_path="/Users/x/WAM", agent="claude"
+    ))
+    assert out["status"] == "launched"
+    assert out["viewer_url"] == "https://viewer/pty-abc123"
+    assert out["project_dir"].endswith(os.path.join("pty-abc123", "WAM"))
+
+
+@pytest.mark.asyncio
+async def test_unknown_agent_rejected(wired):
+    out = json.loads(await mcp_server.coda_interactive(
+        prompt="x", workspace_path="/Users/x/WAM", agent="bogus"
+    ))
+    assert out["status"] == "error" and "Unknown agent" in out["error"]
     for allowed in ALLOWED_AGENTS:
-        assert allowed in result["error"]
+        assert allowed in out["error"]
 
 
-def test_coda_interactive_default_agent_is_claude():
-    """Calling with no agent kwarg defaults to claude (assertion via signature inspection)."""
-    import inspect
-    from coda_mcp import mcp_server
+@pytest.mark.asyncio
+async def test_pty_hook_not_wired(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_app_create_session", None)
+    monkeypatch.setattr(mcp_server, "_app_send_input", None)
+    out = json.loads(await mcp_server.coda_interactive(
+        prompt="x", workspace_path="/Users/x/WAM", agent="claude"
+    ))
+    assert out["status"] == "error" and "PTY hook" in out["error"]
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent,cmd", [
+    ("claude", "claude"), ("hermes", "hermes chat"), ("codex", "codex"),
+    ("gemini", "gemini"), ("opencode", "opencode"),
+])
+async def test_agent_matrix(wired, agent, cmd):
+    inputs, _ = wired
+    await mcp_server.coda_interactive(
+        prompt="go", workspace_path="/Users/x/WAM", agent=agent
+    )
+    assert any(t.strip() == cmd for t in inputs)
+
+
+def test_no_blocking_sleep_in_source():
+    src = inspect.getsource(mcp_server.coda_interactive)
+    assert "time.sleep(" not in src
+
+
+def test_no_workspaceclient_in_module():
+    """The export-era WorkspaceClient import/use is gone from the module."""
+    src = inspect.getsource(mcp_server)
+    assert "export_workspace_tree" not in src
+    assert "workspace.get_status(" not in src
+
+
+# ── preserved signature / contract guards ────────────────────────────
+
+
+def test_default_agent_is_claude():
     sig = inspect.signature(mcp_server.coda_interactive)
     assert sig.parameters["agent"].default == "claude"
 
 
-def test_coda_interactive_export_failure_cleans_partial_dir(monkeypatch, tmp_path):
-    """If export raises mid-way, the partial project dir is removed and the PTY is closed."""
-    from unittest.mock import MagicMock
-    from coda_mcp import mcp_server
+def test_no_branch_parameter():
+    sig = inspect.signature(mcp_server.coda_interactive)
+    assert "branch" not in sig.parameters
 
-    monkeypatch.setenv("HOME", str(tmp_path))
 
-    fake_client = MagicMock()
-    fake_client.workspace.get_status.return_value = _make_dir_status()
-    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
-
-    # PTY-creation hook returns a deterministic id we can predict.
-    monkeypatch.setattr(
-        mcp_server, "_app_create_session", lambda **kw: "pty-exportfail-id",
+def test_instructions_drop_stale_export_wording_and_keep_contract():
+    """Server-level MCP instructions: no stale server-side export claim; contract intact."""
+    txt = mcp_server.mcp.instructions
+    lowered = txt.lower()
+    # Stale server-side export wording is gone; real mechanism named.
+    assert "server-side snapshot" not in txt
+    assert "export-dir" in txt
+    # Still-valid broadened contract: plain folders accepted + upload-first pattern.
+    assert "coda_interactive" in txt
+    assert (
+        "git folder or" in lowered
+        or "plain workspace folder" in lowered
+        or "plain folder" in lowered
     )
-
-    closed = []
-    monkeypatch.setattr(
-        mcp_server, "_app_close_session", lambda sid: closed.append(sid),
-    )
-
-    def fake_export(client, workspace_path, dest_dir):
-        # Create the dir + a partial file, then raise.
-        os.makedirs(dest_dir, exist_ok=True)
-        with open(os.path.join(dest_dir, "partial.txt"), "w") as f:
-            f.write("partial")
-        raise RuntimeError("simulated export failure")
-
-    monkeypatch.setattr(mcp_server, "export_workspace_tree", fake_export)
-
-    # send_input hook should NOT be called for export-failure path (we close before launch).
-    sent = []
-    monkeypatch.setattr(
-        mcp_server, "_app_send_input", lambda sid, payload: sent.append((sid, payload)),
-    )
-
-    result_str = asyncio.run(mcp_server.coda_interactive(
-        prompt="hello",
-        workspace_path="/Workspace/Users/x/proj",
-    ))
-    result = json.loads(result_str)
-
-    assert result["status"] == "error"
-    assert "export" in result["error"].lower()
-    # PTY was created — must be closed on failure.
-    assert "pty-exportfail-id" in closed, "PTY must be closed when export fails"
-    # Project dir cleaned up.
-    project_dir = tmp_path / ".coda" / "projects" / "pty-exportfail-id"
-    assert not project_dir.exists(), "Partial project dir must be removed after export failure"
+    assert "upload" in lowered or "workspace.import" in lowered
 
 
-def test_coda_interactive_happy_path_sends_agent_command_and_prompt(monkeypatch, tmp_path):
-    """End-to-end mock: export succeeds, PTY created, cd + agent + prompt sent in order."""
-    from unittest.mock import MagicMock
-    from coda_mcp import mcp_server
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-    fake_client = MagicMock()
-    fake_client.workspace.get_status.return_value = _make_dir_status()
-    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
-
-    monkeypatch.setattr(
-        mcp_server,
-        "export_workspace_tree",
-        lambda client, ws_path, dest_dir: os.makedirs(dest_dir, exist_ok=True),
-    )
-    monkeypatch.setattr(
-        mcp_server, "_app_create_session", lambda **kw: "pty-happy-id",
-    )
-
-    sent_to_pty = []
-    monkeypatch.setattr(
-        mcp_server,
-        "_app_send_input",
-        lambda sid, payload: sent_to_pty.append((sid, payload)),
-    )
-
-    # Stub the agent-ready wait so the test runs fast.
-    monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", _no_wait)
-
-    monkeypatch.setattr(
-        mcp_server.url_builder,
-        "build_viewer_url",
-        lambda pty_id: f"https://test.example/?session={pty_id}",
-    )
-
-    result_str = asyncio.run(mcp_server.coda_interactive(
-        prompt="continue debugging the auth flow",
-        workspace_path="/Workspace/Users/x/proj",
-        agent="claude",
-    ))
-    result = json.loads(result_str)
-
-    assert result["status"] == "launched"
-    assert result["agent"] == "claude"
-    assert result["viewer_url"] == "https://test.example/?session=pty-happy-id"
-    assert result["project_dir"].endswith("/pty-happy-id")
-
-    # Three PTY writes, in order: cd, agent command, prompt.
-    assert len(sent_to_pty) == 3, f"Expected 3 PTY writes; got {sent_to_pty}"
-    assert sent_to_pty[0][0] == "pty-happy-id"
-    assert sent_to_pty[0][1].startswith("cd "), \
-        f"First write should be cd; got {sent_to_pty[0][1]!r}"
-    assert sent_to_pty[1] == ("pty-happy-id", "claude\n")
-    assert sent_to_pty[2] == ("pty-happy-id", "continue debugging the auth flow\n")
-
-
-def test_coda_interactive_agent_command_matrix(monkeypatch, tmp_path):
-    """Each allowed agent maps to its expected launch command."""
-    from unittest.mock import MagicMock
-    from coda_mcp import mcp_server
-
-    expected = {
-        "claude": "claude\n",
-        "hermes": "hermes chat\n",
-        "codex": "codex\n",
-        "gemini": "gemini\n",
-        "opencode": "opencode\n",
-    }
-
-    for agent, expected_cmd in expected.items():
-        monkeypatch.setenv("HOME", str(tmp_path / agent))
-
-        fake_client = MagicMock()
-        fake_client.workspace.get_status.return_value = _make_dir_status()
-        monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
-        monkeypatch.setattr(
-            mcp_server, "export_workspace_tree",
-            lambda client, ws_path, dest_dir: os.makedirs(dest_dir, exist_ok=True),
-        )
-        monkeypatch.setattr(
-            mcp_server, "_app_create_session", lambda **kw: f"pty-{agent}",
-        )
-        sent = []
-        monkeypatch.setattr(
-            mcp_server, "_app_send_input", lambda sid, p: sent.append(p),
-        )
-        monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", _no_wait)
-        monkeypatch.setattr(
-            mcp_server.url_builder, "build_viewer_url",
-            lambda pty_id: f"https://test/?s={pty_id}",
-        )
-
-        result_str = asyncio.run(mcp_server.coda_interactive(
-            prompt="x", workspace_path="/W/x/p", agent=agent,
-        ))
-        result = json.loads(result_str)
-        assert result["status"] == "launched", f"agent {agent}: {result}"
-
-        # sent[0] is cd, sent[1] is the agent command, sent[2] is the prompt.
-        assert sent[1] == expected_cmd, \
-            f"agent {agent}: expected {expected_cmd!r}, got {sent[1]!r}"
-
-
-def test_coda_interactive_does_not_use_blocking_sleep(monkeypatch, tmp_path):
-    """Regression guard: coda_interactive is async; it must use asyncio.sleep, not time.sleep.
-
-    A blocking sleep in an async handler stalls the event loop and prevents
-    concurrent MCP requests from being processed.
-    """
-    from unittest.mock import MagicMock
-    from coda_mcp import mcp_server
-    import time as _time
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-    fake_client = MagicMock()
-    fake_client.workspace.get_status.return_value = _make_dir_status()
-    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
-    monkeypatch.setattr(
-        mcp_server, "export_workspace_tree",
-        lambda client, ws_path, dest_dir: os.makedirs(dest_dir, exist_ok=True),
-    )
-    monkeypatch.setattr(mcp_server, "_app_create_session", lambda **kw: "pty-noblock-id")
-    monkeypatch.setattr(mcp_server, "_app_send_input", lambda *a, **k: None)
-    monkeypatch.setattr(mcp_server, "_wait_for_agent_ready", _no_wait)
-    monkeypatch.setattr(
-        mcp_server.url_builder, "build_viewer_url", lambda pty_id: f"https://t/?s={pty_id}",
-    )
-
-    # Trap time.sleep — if anything in coda_interactive calls it, the test fails.
-    blocking_calls = []
-    monkeypatch.setattr(_time, "sleep", lambda s: blocking_calls.append(s))
-
-    asyncio.run(mcp_server.coda_interactive(
-        prompt="x", workspace_path="/W/x/p",
-    ))
-
-    assert blocking_calls == [], (
-        f"coda_interactive called time.sleep({blocking_calls}); must use asyncio.sleep "
-        f"instead so the event loop isn't blocked."
-    )
+# ── preserved wait-helper behavior tests (now via the wrapper) ────────
 
 
 def test_wait_for_agent_ready_returns_when_buffer_stabilizes(monkeypatch):
-    """Helper returns once the output buffer has been stable for the configured window."""
-    import asyncio
+    """Wrapper returns once the output buffer has been stable for the window."""
     from app import sessions
-    from coda_mcp import mcp_server
 
-    # Set up a fake session with a controllable output buffer.
     sid = "pty-stabilize-test"
     sessions[sid] = {"output_buffer": [b"banner line\n", b"prompt> "]}
-
-    # Shrink the stability window so the test runs fast.
     monkeypatch.setattr(mcp_server, "_PROMPT_SEED_STABILITY_S", 0.05)
     monkeypatch.setattr(mcp_server, "_PROMPT_SEED_MAX_WAIT_S", 2.0)
-
     try:
-        # Buffer is already populated and won't change → helper should return quickly.
         async def _run():
             import time
             t0 = time.time()
             await mcp_server._wait_for_agent_ready(sid)
             return time.time() - t0
         elapsed = asyncio.run(_run())
-
-        # Should return roughly _PROMPT_SEED_STABILITY_S, definitely well under MAX_WAIT.
-        assert elapsed < 1.0, f"Helper took {elapsed:.2f}s — should have returned quickly when buffer is stable"
+        assert elapsed < 1.0, f"Helper took {elapsed:.2f}s — should return quickly when stable"
     finally:
         sessions.pop(sid, None)
 
 
 def test_wait_for_agent_ready_times_out_when_buffer_empty(monkeypatch):
-    """Helper returns at max-wait if the buffer never gets any content."""
-    import asyncio
+    """Wrapper returns at max-wait if the buffer never gets content."""
     from app import sessions
-    from coda_mcp import mcp_server
 
     sid = "pty-empty-test"
     sessions[sid] = {"output_buffer": []}
-
     monkeypatch.setattr(mcp_server, "_PROMPT_SEED_STABILITY_S", 0.05)
     monkeypatch.setattr(mcp_server, "_PROMPT_SEED_MAX_WAIT_S", 0.3)
-
     try:
         async def _run():
             import time
@@ -298,18 +230,13 @@ def test_wait_for_agent_ready_times_out_when_buffer_empty(monkeypatch):
             await mcp_server._wait_for_agent_ready(sid)
             return time.time() - t0
         elapsed = asyncio.run(_run())
-
-        # Should have hit max-wait since buffer never had content.
-        assert 0.2 <= elapsed <= 0.8, f"Expected ~0.3s max-wait timeout; got {elapsed:.2f}s"
+        assert 0.2 <= elapsed <= 0.8, f"Expected ~0.3s max-wait; got {elapsed:.2f}s"
     finally:
         sessions.pop(sid, None)
 
 
 def test_wait_for_agent_ready_returns_when_session_gone(monkeypatch):
-    """Helper returns immediately if the session is no longer in the sessions dict."""
-    import asyncio
-    from coda_mcp import mcp_server
-
+    """Wrapper returns immediately if the session is no longer present."""
     monkeypatch.setattr(mcp_server, "_PROMPT_SEED_STABILITY_S", 0.05)
     monkeypatch.setattr(mcp_server, "_PROMPT_SEED_MAX_WAIT_S", 5.0)
 
@@ -319,112 +246,4 @@ def test_wait_for_agent_ready_returns_when_session_gone(monkeypatch):
         await mcp_server._wait_for_agent_ready("nonexistent-pty-id")
         return time.time() - t0
     elapsed = asyncio.run(_run())
-
-    # Should return well under MAX_WAIT (within one poll cycle).
-    assert elapsed < 0.5, f"Helper took {elapsed:.2f}s — should return immediately when session is gone"
-
-
-def test_coda_interactive_workspace_path_does_not_exist(monkeypatch):
-    """If workspace.get_status raises, return error and don't proceed to PTY."""
-    from unittest.mock import MagicMock
-    from coda_mcp import mcp_server
-
-    fake_client = MagicMock()
-    fake_client.workspace.get_status.side_effect = Exception("RESOURCE_DOES_NOT_EXIST")
-    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
-
-    pty_created = []
-    monkeypatch.setattr(
-        mcp_server, "_app_create_session",
-        lambda **kw: pty_created.append(kw) or "should-not-be-used",
-    )
-
-    result_str = asyncio.run(mcp_server.coda_interactive(
-        prompt="hello",
-        workspace_path="/Workspace/Users/x/nonexistent",
-    ))
-    result = json.loads(result_str)
-
-    assert result["status"] == "error"
-    assert "not found" in result["error"].lower() or "does_not_exist" in result["error"].lower()
-    # No PTY may be created if validation fails.
-    assert pty_created == [], f"PTY must not be created when workspace_path is invalid; got {pty_created}"
-
-
-def test_coda_interactive_workspace_path_not_directory(monkeypatch):
-    """If workspace.get_status returns object_type=FILE (or anything not DIRECTORY), return error."""
-    from unittest.mock import MagicMock
-    from coda_mcp import mcp_server
-
-    file_status = MagicMock()
-    file_status.object_type = "FILE"
-    fake_client = MagicMock()
-    fake_client.workspace.get_status.return_value = file_status
-    monkeypatch.setattr(mcp_server, "WorkspaceClient", lambda: fake_client)
-
-    pty_created = []
-    monkeypatch.setattr(
-        mcp_server, "_app_create_session",
-        lambda **kw: pty_created.append(kw) or "should-not-be-used",
-    )
-
-    result_str = asyncio.run(mcp_server.coda_interactive(
-        prompt="hello",
-        workspace_path="/Workspace/Users/x/some-file.py",
-    ))
-    result = json.loads(result_str)
-
-    assert result["status"] == "error"
-    assert "directory" in result["error"].lower()
-    assert pty_created == [], "PTY must not be created when workspace_path is not a directory"
-
-
-def test_coda_interactive_no_branch_parameter():
-    """The branch parameter must not exist on coda_interactive's signature."""
-    import inspect
-    from coda_mcp import mcp_server
-
-    sig = inspect.signature(mcp_server.coda_interactive)
-    assert "branch" not in sig.parameters, (
-        f"coda_interactive must not accept a `branch` parameter (got {list(sig.parameters)}). "
-        f"The broadened contract handles git-folder branch state on the caller side."
-    )
-
-
-def test_interactive_handoff_instructions_describe_broadened_contract():
-    """The server-level INTERACTIVE HANDOFF paragraph must reflect the broadened contract."""
-    from coda_mcp import mcp_server
-
-    instructions = mcp_server.mcp.instructions
-
-    # Must mention coda_interactive.
-    assert "coda_interactive" in instructions
-
-    # Must NOT still claim a Git Folder is required.
-    lowered = instructions.lower()
-    assert "must be a databricks workspace git folder" not in lowered, (
-        "Instructions still require a Git Folder — broadened contract was not applied."
-    )
-    assert "commit and push" not in lowered, (
-        "Instructions still tell the caller to commit and push — only relevant for Git Folders, "
-        "but the broadened contract accepts plain folders too."
-    )
-
-    # Must mention that plain folders work.
-    # Either "git folder or" phrasing, or "plain workspace folder" — accept either.
-    assert (
-        "git folder or" in lowered
-        or "plain workspace folder" in lowered
-        or "plain folder" in lowered
-    ), "Instructions must mention that plain Workspace folders are accepted."
-
-    # Must surface the upload-then-handoff pattern so upstream callers know
-    # to push files into the workspace BEFORE calling.
-    assert (
-        "upload" in lowered
-        or "workspace.import" in lowered
-    ), (
-        "Instructions must tell the upstream caller to upload/import the project "
-        "files into the Workspace first if they aren't already there — the tool "
-        "only reads existing Workspace paths, it doesn't accept inline payloads."
-    )
+    assert elapsed < 0.5, f"Helper took {elapsed:.2f}s — should return when session gone"

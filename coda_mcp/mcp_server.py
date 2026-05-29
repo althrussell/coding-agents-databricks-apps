@@ -29,12 +29,6 @@ from mcp.types import ToolAnnotations
 
 from coda_mcp import task_manager
 from coda_mcp import url_builder
-from coda_mcp.workspace_export import export_workspace_tree, _is_directory
-
-try:
-    from databricks.sdk import WorkspaceClient
-except ImportError:
-    WorkspaceClient = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +88,10 @@ mcp = FastMCP(
         "via the Databricks SDK, REST, or CLI — any of these) into a folder "
         "the user can read, then pass that folder as workspace_path. The tool "
         "does NOT accept inline file payloads. If the directory is a Git "
-        "Folder, ensure the desired branch is checked out and pushed first — "
-        "the export is a server-side snapshot. The tool exports the directory "
-        "into a Coda-local working directory, launches the chosen agent "
+        "Folder, ensure the desired branch is checked out first — "
+        "the pull is a point-in-time snapshot. The tool copies the directory "
+        "into a Coda-local working directory using your credentials (via "
+        "`databricks workspace export-dir`), launches the chosen agent "
         "(claude default; also hermes, codex, gemini, opencode), and types "
         "the prompt as the first user input. The return shape includes a "
         "viewer_url the user opens to attach — share it immediately in plain "
@@ -430,19 +425,19 @@ async def coda_interactive(
 ) -> str:
     """Launch an interactive agent session in CoDA, handed off via a viewer URL.
 
-    The MCP caller passes a Databricks Workspace directory path (a Git Folder
-    or a plain Workspace folder — either works). Coda exports its file tree,
-    launches the chosen agent (claude default) in that directory, auto-types
-    ``prompt`` as the first user input, and returns a ``viewer_url`` the
-    calling user opens in a browser to drive the session.
+    The MCP caller passes a Databricks Workspace directory path. CoDA pulls that
+    folder onto the session's disk IN THE TERMINAL (authenticated as you) via
+    ``databricks workspace export-dir``, launches the chosen agent (claude
+    default) in the pulled directory, auto-types ``prompt`` as the first user
+    input, and returns a ``viewer_url`` the calling user opens to drive it.
 
-    Pre-condition: ``workspace_path`` must point to a directory that already
-    exists in the Databricks Workspace. If the directory is a Git Folder and
-    the caller wants a specific branch checked out, they must do that
-    themselves before calling — the export is a server-side snapshot.
+    If the pull produces no files (bad path or no read access) the tool returns
+    a ``status=error`` and does not launch the agent.
 
     Interactive sessions do NOT appear in ``coda_inbox`` and ``coda_get_result``
     will not return anything for them. The viewer URL is the only handle.
+
+    ``email`` is accepted for forward-compatibility and is currently unused.
 
     Allowed agents: claude (default), hermes, codex, gemini, opencode.
     """
@@ -452,30 +447,6 @@ async def coda_interactive(
             "error": f"Unknown agent: {agent!r}. Allowed: {sorted(_ALLOWED_AGENTS)}",
         })
 
-    if WorkspaceClient is None:
-        return json.dumps({
-            "status": "error",
-            "error": "databricks-sdk not installed",
-        })
-
-    client = WorkspaceClient()
-
-    # Validate that the path exists and is a directory.
-    try:
-        status = client.workspace.get_status(workspace_path)
-    except Exception as e:
-        return json.dumps({
-            "status": "error",
-            "error": f"Workspace path not found ({workspace_path}): {e}",
-        })
-
-    if not _is_directory(status):
-        return json.dumps({
-            "status": "error",
-            "error": f"Workspace path is not a directory: {workspace_path}",
-        })
-
-    # Create PTY FIRST so we have its session_id for the project_dir name.
     if _app_create_session is None or _app_send_input is None:
         return json.dumps({
             "status": "error",
@@ -485,22 +456,38 @@ async def coda_interactive(
     pty_session_id = None
     project_dir = None
     try:
+        # Create PTY FIRST so we have its session_id for the project_dir name.
         pty_session_id = _app_create_session(
             label=f"{agent}-interactive",
             replay_only=False,
         )
-
-        # Build the project dir at the canonical path keyed by PTY id.
         project_dir = os.path.join(
             os.path.expanduser("~/.coda/projects"),
             pty_session_id,
         )
+        os.makedirs(project_dir, exist_ok=True)
 
-        # Export the Workspace tree into project_dir.
-        try:
-            export_workspace_tree(client, workspace_path, project_dir)
-        except Exception as e:
-            # Close the PTY and clean up the partial dir.
+        name = _safe_dirname(workspace_path)
+        source_path = _normalize_workspace_path(workspace_path)
+
+        # Pull the Workspace folder into ./<name> AS THE USER (terminal creds).
+        # A failed export-dir short-circuits the && chain, leaving <name> absent;
+        # the filesystem check below turns that into a real error.
+        pull_cmd = (
+            f"cd {shlex.quote(project_dir)} && "
+            f"databricks workspace export-dir {shlex.quote(source_path)} "
+            f"{shlex.quote('./' + name)} && "
+            f"cd {shlex.quote(name)}"
+        )
+        _app_send_input(pty_session_id, pull_cmd + "\n")
+
+        # Wait for the pull to finish (shell goes idle), then verify on disk.
+        await _wait_for_output_stable(
+            pty_session_id, _EXPORT_MAX_WAIT_S, _EXPORT_STABILITY_S
+        )
+
+        target_dir = os.path.join(project_dir, name)
+        if not os.path.isdir(target_dir) or not os.listdir(target_dir):
             if _app_close_session is not None:
                 try:
                     _app_close_session(pty_session_id)
@@ -510,19 +497,24 @@ async def coda_interactive(
                 shutil.rmtree(project_dir, ignore_errors=True)
             return json.dumps({
                 "status": "error",
-                "error": f"Failed to export workspace tree: {e}",
+                "error": (
+                    f"No files were pulled from {workspace_path}. Check the path "
+                    f"exists in the Workspace and that you have read access."
+                ),
             })
 
-        # cd into the project dir.
-        _app_send_input(pty_session_id, f"cd {shlex.quote(project_dir)}\n")
-
-        # Launch the agent.
+        # Launch the agent (fresh — same proven path as before).
         launch_cmd = _AGENT_LAUNCH_CMDS[agent]
         _app_send_input(pty_session_id, launch_cmd + "\n")
 
-        # Wait briefly for agent initialization, then paste the prompt.
+        # Wait for the agent TUI to settle, then paste the kickoff prompt with a
+        # context line naming the source so the agent knows where files came from.
         await _wait_for_agent_ready(pty_session_id)
-        _app_send_input(pty_session_id, prompt + "\n")
+        seeded_prompt = (
+            f"Your working directory contains files exported from the Databricks "
+            f"Workspace path {workspace_path}.\n\n{prompt}"
+        )
+        _app_send_input(pty_session_id, seeded_prompt + "\n")
 
         viewer_url = url_builder.build_viewer_url(pty_session_id)
 
@@ -530,15 +522,14 @@ async def coda_interactive(
             "status": "launched",
             "viewer_url": viewer_url,
             "agent": agent,
-            "project_dir": project_dir,
+            "project_dir": target_dir,
             "workspace_path": workspace_path,
             "instructions": (
-                "Open viewer_url to attach. The agent is loaded with the "
-                "project files exported from Workspace and your kickoff "
-                "prompt typed. Type the agent's quit command (e.g. /quit) "
-                "and then `exit` to end the session. Note: git history is "
-                "NOT available in the session — files are an export, not "
-                "a clone."
+                "Open viewer_url to attach. The agent is running in a directory "
+                "holding the files pulled from your Workspace folder, with your "
+                "kickoff prompt typed. Type the agent's quit command (e.g. /quit) "
+                "then `exit` to end the session. Note: files are a snapshot pulled "
+                "via 'databricks workspace export-dir' — git history is not included."
             ),
         })
     except Exception as e:

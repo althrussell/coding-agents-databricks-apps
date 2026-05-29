@@ -46,7 +46,7 @@ def test_mcp_create_pty_session_defaults_replay_only_false():
 @_pty_skip
 def test_attach_session_replay_only_alive_pty_returns_replay(tmp_path, monkeypatch):
     """A replay_only=True PTY that is still alive serves the transcript, not the live buffer."""
-    from app import app as flask_app, mcp_create_pty_session, mcp_close_pty_session, sessions
+    from app import app as flask_app, mcp_create_pty_session, mcp_close_pty_session
     from coda_mcp import task_manager
 
     # Point task_manager at a tmp sessions root so find_task_dir_by_pty_session resolves.
@@ -163,13 +163,13 @@ def test_coda_run_does_not_create_project_dir(tmp_path, monkeypatch):
     """Regression guard: coda_run is Mode 3 (replay-only, no project dir).
     Only coda_interactive (Mode 2) creates dirs under ~/.coda/projects/.
 
-    If a future change accidentally calls export_workspace_tree from
-    coda_run or otherwise creates a per-session project dir, this test fires.
+    If a future change makes coda_run pull workspace files or otherwise
+    creates a per-session project dir under ~/.coda/projects/, this test fires.
     """
     import asyncio
     import json
     import os
-    from app import sessions, mcp_close_pty_session
+    from app import mcp_close_pty_session
     from coda_mcp import mcp_server, task_manager
 
     monkeypatch.setenv("HOME", str(tmp_path))
