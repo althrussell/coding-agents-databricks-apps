@@ -653,3 +653,36 @@ def test_coda_run_signature_has_workflow_protocol_param():
     sig = inspect.signature(mcp_server.coda_run)
     assert "workflow_protocol" in sig.parameters
     assert sig.parameters["workflow_protocol"].default is True
+
+
+def test_wrap_prompt_instructions_documents_info_needed():
+    """INSTRUCTIONS section must mention the info_needed status and feedback field."""
+    from coda_mcp.task_manager import wrap_prompt
+
+    out = wrap_prompt(
+        task_id="t-1",
+        session_id="s-1",
+        email="user@example.com",
+        prompt="do the thing",
+        context=None,
+        results_dir="/tmp/r",
+    )
+    # Pull the INSTRUCTIONS section out for focused assertions.
+    assert "info_needed" in out
+    assert "feedback" in out
+
+
+def test_wrap_prompt_instructions_lists_new_step_labels():
+    """INSTRUCTIONS section enumerates the canonical step labels emitted by the agent."""
+    from coda_mcp.task_manager import wrap_prompt
+
+    out = wrap_prompt(
+        task_id="t-1",
+        session_id="s-1",
+        email="user@example.com",
+        prompt="do the thing",
+        context=None,
+        results_dir="/tmp/r",
+    )
+    for label in ("plan", "critique_plan", "execute", "critique_execute", "synthesize", "critique_synthesize"):
+        assert label in out, f"Missing step label {label!r} from prompt text"

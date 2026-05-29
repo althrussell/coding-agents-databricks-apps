@@ -214,18 +214,28 @@ def wrap_prompt(
         f"INSTRUCTIONS:\n"
         f"1. As you work, append progress lines to {results_dir}/status.jsonl\n"
         f'   Each line must be valid JSON: {{"step": "label", "message": "what you are doing"}}\n'
+        f"   Canonical step labels (use these when the workflow protocol is active):\n"
+        f"     plan, critique_plan, execute_<n>, critique_execute,\n"
+        f"     synthesize, critique_synthesize, info_needed, failed\n"
         f"\n"
         f"2. When you are COMPLETELY DONE, write a SINGLE FILE at this exact path:\n"
         f"   {results_dir}/result.json\n"
-        f"   It must contain this JSON structure:\n"
+        f"   It must contain this JSON structure (status field has four allowed values):\n"
         f"   {{\n"
-        f'     "status": "completed",\n'
-        f'     "summary": "one paragraph describing what you did",\n'
+        f'     "status": "completed" | "failed" | "info_needed" | "needs_approval",\n'
+        f'     "summary": "one paragraph describing what you did or why you stopped",\n'
+        f'     "feedback": "REQUIRED if status=info_needed — what context the caller must add",\n'
         f'     "files_changed": ["list", "of", "file", "paths"],\n'
         f'     "artifacts": {{}},\n'
         f'     "errors": []\n'
         f"   }}\n"
-        f"   If you failed, set status to \"failed\" and describe the error.\n"
+        f"   - status=\"completed\": you finished the task.\n"
+        f"   - status=\"failed\": unrecoverable hard error; describe in errors[].\n"
+        f"   - status=\"info_needed\": you are blocked because something the CALLER must\n"
+        f"     supply is missing. The feedback field is REQUIRED and must precisely\n"
+        f"     name what is missing. The caller will resubmit with more context.\n"
+        f"   - status=\"needs_approval\": you have a destructive action ready but need\n"
+        f"     explicit caller approval before executing. See SAFETY section.\n"
         f"   IMPORTANT: result.json is a FILE not a directory. Write it with:\n"
         f"   echo '{{...}}' > {results_dir}/result.json\n"
         f"\n"
