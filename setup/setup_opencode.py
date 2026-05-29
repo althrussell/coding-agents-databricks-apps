@@ -25,7 +25,7 @@ home = Path(os.environ["HOME"])
 
 host = os.environ.get("DATABRICKS_HOST", "")
 token = os.environ.get("DATABRICKS_TOKEN", "")
-anthropic_model = os.environ.get("ANTHROPIC_MODEL", "databricks-claude-sonnet-4-6")
+anthropic_model = os.environ.get("ANTHROPIC_MODEL", "databricks-claude-opus-4-7")
 
 # 1. Install OpenCode CLI into ~/.local/bin (always, even without token)
 local_bin = home / ".local" / "bin"
@@ -142,6 +142,13 @@ if gateway_host:
                     "apiKey": "{env:DATABRICKS_TOKEN}"
                 },
                 "models": {
+                    "databricks-claude-opus-4-7": {
+                        "name": "Claude Opus 4.7 (Databricks)",
+                        "limit": {
+                            "context": 200000,
+                            "output": 16384
+                        }
+                    },
                     "databricks-claude-opus-4-6": {
                         "name": "Claude Opus 4.6 (Databricks)",
                         "limit": {
@@ -158,13 +165,6 @@ if gateway_host:
                     },
                     "databricks-gemini-2-5-flash": {
                         "name": "Gemini 2.5 Flash (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-2-5-pro": {
-                        "name": "Gemini 2.5 Pro (Databricks)",
                         "limit": {
                             "context": 1000000,
                             "output": 8192
@@ -222,6 +222,13 @@ else:
                     "apiKey": "{env:DATABRICKS_TOKEN}"
                 },
                 "models": {
+                    "databricks-claude-opus-4-7": {
+                        "name": "Claude Opus 4.7 (Databricks)",
+                        "limit": {
+                            "context": 200000,
+                            "output": 16384
+                        }
+                    },
                     "databricks-claude-opus-4-6": {
                         "name": "Claude Opus 4.6 (Databricks)",
                         "limit": {
@@ -238,13 +245,6 @@ else:
                     },
                     "databricks-gemini-2-5-flash": {
                         "name": "Gemini 2.5 Flash (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-2-5-pro": {
-                        "name": "Gemini 2.5 Pro (Databricks)",
                         "limit": {
                             "context": 1000000,
                             "output": 8192
