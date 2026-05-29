@@ -67,6 +67,14 @@ mcp = FastMCP(
         "4) coda_get_result — for completed tasks, get full structured output.\n\n"
         "CHAINING: pass previous_session_id from a completed task's session_id "
         "to give the new task context of what was done before.\n\n"
+        "INFO_NEEDED HANDOFF: When coda_inbox shows a task with status='info_needed', "
+        "the agent could not proceed because of missing context. Call coda_get_result "
+        "to read the 'feedback' field — it tells you exactly what the agent needs (a "
+        "table name, a decision, a clarification). Add that context to the prompt and "
+        "resubmit via coda_run with previous_session_id set to the original task's "
+        "session_id so the agent has the prior attempt's context. 'needs_approval' is "
+        "similar but means the agent has a destructive plan and is waiting for the "
+        "caller's explicit go/no-go.\n\n"
         "SHARE THE REPLAY URL: When coda_run returns a viewer_url field (non-null), "
         "mention it to the user in plain text (e.g. \"you can view the session replay "
         "at <url>\"). The URL is a read-only static replay showing the prompt, the "
@@ -556,7 +564,13 @@ async def coda_inbox(
                 if vu:
                     t["viewer_url"] = vu
 
-        counts = {"running": 0, "completed": 0, "failed": 0}
+        counts = {
+            "running": 0,
+            "completed": 0,
+            "failed": 0,
+            "info_needed": 0,
+            "needs_approval": 0,
+        }
         for t in tasks:
             s = t.get("status", "")
             if s in counts:
@@ -584,11 +598,15 @@ async def coda_get_result(
 ) -> str:
     """Retrieve the structured result of a completed task.
 
-    Call this AFTER coda_inbox shows a task as "completed" or "failed".
+    Call this AFTER coda_inbox shows a task as "completed", "failed",
+    "info_needed", or "needs_approval".
 
     Returns JSON with ``task_id``, ``session_id``, ``status``, ``summary``
-    (what was done), ``files_changed`` (list of modified files),
-    ``artifacts`` (job IDs, commit hashes, etc.), and ``errors`` (if any).
+    (what was done or why the agent stopped), ``files_changed`` (list of
+    modified files), ``artifacts`` (job IDs, commit hashes, etc.),
+    ``errors`` (if any), and — when status is "info_needed" — ``feedback``
+    (a precise description of what context the caller must add before
+    resubmitting).
     """
     try:
         result = task_manager.get_task_result(task_id, session_id)

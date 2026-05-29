@@ -1,10 +1,12 @@
 """Tests for mcp_server — v2 background execution + inbox API."""
 
+import asyncio
 import json
 import os
 from unittest import mock
 
 import pytest
+from coda_mcp import mcp_server, task_manager, url_builder
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -217,7 +219,7 @@ class TestCodaInbox:
         result = await mcp_server.coda_inbox()
         data = _parse(result)
         assert data["tasks"] == []
-        assert data["counts"] == {"running": 0, "completed": 0, "failed": 0}
+        assert data["counts"] == {"running": 0, "completed": 0, "failed": 0, "info_needed": 0, "needs_approval": 0}
 
     @pytest.mark.asyncio
     async def test_running_task_in_inbox(self):
@@ -289,8 +291,8 @@ class TestCodaInbox:
         """Inbox returns tasks sorted most recent first."""
         from coda_mcp import mcp_server
 
-        r1 = await mcp_server.coda_run(prompt="first", email="a@b.com")
-        r2 = await mcp_server.coda_run(prompt="second", email="a@b.com")
+        await mcp_server.coda_run(prompt="first", email="a@b.com")
+        await mcp_server.coda_run(prompt="second", email="a@b.com")
 
         result = await mcp_server.coda_inbox()
         data = _parse(result)
@@ -346,14 +348,6 @@ class TestCodaGetResult:
 
 
 # ── viewer_url + transcript_path wiring ─────────────────────────────
-
-
-import asyncio
-import json
-import os
-from unittest import mock
-
-from coda_mcp import mcp_server, task_manager, url_builder
 
 
 def _run(coro):
