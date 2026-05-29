@@ -220,9 +220,11 @@ def wrap_prompt(
         f"\n"
         f"2. When you are COMPLETELY DONE, write a SINGLE FILE at this exact path:\n"
         f"   {results_dir}/result.json\n"
-        f"   It must contain this JSON structure (status field has four allowed values):\n"
+        f"   It must contain this JSON structure (status is one of the four\n"
+        f"   values listed below; the angle-bracketed placeholder is NOT literal\n"
+        f"   JSON — pick exactly one of the four values):\n"
         f"   {{\n"
-        f'     "status": "completed" | "failed" | "info_needed" | "needs_approval",\n'
+        f'     "status": "<completed | failed | info_needed | needs_approval>",\n'
         f'     "summary": "one paragraph describing what you did or why you stopped",\n'
         f'     "feedback": "REQUIRED if status=info_needed — what context the caller must add",\n'
         f'     "files_changed": ["list", "of", "file", "paths"],\n'
