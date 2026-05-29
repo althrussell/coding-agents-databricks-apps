@@ -224,6 +224,7 @@ async def coda_run(
     previous_session_id: str = "",
     permissions: str = "smart",
     timeout_s: int = 3600,
+    workflow_protocol: bool = True,
 ) -> str:
     """Submit a coding task — FIRE AND FORGET.
 
@@ -235,6 +236,12 @@ async def coda_run(
     ``context`` is a JSON string with Unity Catalog metadata (tables, schemas).
     ``previous_session_id`` chains to a prior task's session for context continuity.
     ``permissions`` can be ``"smart"`` (default, safe) or ``"yolo"`` (auto-approve all).
+
+    ``workflow_protocol`` defaults to True, which injects a Databricks
+    orientation block and a 3-phase workflow protocol (PLAN/EXECUTE/SYNTHESIZE
+    with critique at each phase) into the agent's prompt. The protocol also
+    defines the ``info_needed`` terminal status for clean handoff when the
+    agent is blocked. Set False to skip — useful for non-Databricks tasks.
 
     Returns JSON with ``task_id``, ``session_id``, and ``status: "running"``.
     """
@@ -270,6 +277,7 @@ async def coda_run(
             timeout_s=timeout_s,
             permissions=permissions,
             previous_session_id=previous_session_id or None,
+            workflow_protocol=workflow_protocol,
         )
         task_id = result["task_id"]
 

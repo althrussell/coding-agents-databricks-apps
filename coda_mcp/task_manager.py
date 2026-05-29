@@ -19,6 +19,8 @@ import secrets
 import time
 import logging
 
+from coda_mcp.databricks_preamble import build_capabilities, build_workflow_protocol
+
 logger = logging.getLogger(__name__)
 
 # ── Root directory (patched in tests) ────────────────────────────────
@@ -159,11 +161,17 @@ def wrap_prompt(
     results_dir: str,
     context_hint: str | None = None,
     previous_session_id: str | None = None,
+    workflow_protocol: bool = True,
 ) -> str:
     """Build the full prompt string written to ``prompt.txt``.
 
     Uses the ``---CODA-TASK---`` envelope convention so the agent can
     parse metadata from the prompt deterministically.
+
+    When ``workflow_protocol`` is True (default), inserts a CAPABILITIES
+    section (Databricks CLI, skills, MCP servers) and a WORKFLOW PROTOCOL
+    section (3-phase PLAN/EXECUTE/SYNTHESIZE with critique at each phase,
+    plus the info_needed escape hatch). Set False to skip both.
     """
     context_block = ""
     if context:
@@ -181,6 +189,16 @@ def wrap_prompt(
             f"Read {prior_dir}/tasks/*/result.json for context on prior work.\n"
         )
 
+    workflow_block = ""
+    if workflow_protocol:
+        workflow_block = (
+            f"\nCAPABILITIES:\n"
+            f"{build_capabilities()}\n"
+            f"\n"
+            f"WORKFLOW PROTOCOL:\n"
+            f"{build_workflow_protocol()}\n"
+        )
+
     return (
         f"---CODA-TASK---\n"
         f"task_id: {task_id}\n"
@@ -191,6 +209,7 @@ def wrap_prompt(
         f"{context_block}\n"
         f"TASK:\n"
         f"{prompt}\n"
+        f"{workflow_block}"
         f"\n"
         f"INSTRUCTIONS:\n"
         f"1. As you work, append progress lines to {results_dir}/status.jsonl\n"
@@ -237,6 +256,7 @@ def create_task(
     timeout_s: int | None = None,
     permissions: str | None = None,
     previous_session_id: str | None = None,
+    workflow_protocol: bool = True,
 ) -> dict:
     """Create a task inside an existing session.
 
@@ -275,6 +295,7 @@ def create_task(
         results_dir=results_dir,
         context_hint=context_hint,
         previous_session_id=previous_session_id,
+        workflow_protocol=workflow_protocol,
     )
     with open(os.path.join(tdir, "prompt.txt"), "w") as f:
         f.write(wrapped)

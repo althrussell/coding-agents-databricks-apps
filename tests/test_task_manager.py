@@ -539,3 +539,117 @@ def test_find_task_dir_no_sessions_dir(sessions_root, monkeypatch):
 
     monkeypatch.setattr(task_manager, "SESSIONS_DIR", "/nonexistent/path/that/does/not/exist")
     assert task_manager.find_task_dir_by_pty_session("pty-1") is None
+
+
+# ── workflow_protocol flag wiring ────────────────────────────────────
+
+
+def test_wrap_prompt_default_includes_capabilities_and_workflow():
+    """Default workflow_protocol=True; rendered prompt contains both new sections."""
+    from coda_mcp.task_manager import wrap_prompt
+
+    out = wrap_prompt(
+        task_id="t-1",
+        session_id="s-1",
+        email="user@example.com",
+        prompt="do the thing",
+        context=None,
+        results_dir="/tmp/results",
+    )
+    assert "CAPABILITIES:" in out
+    assert "WORKFLOW PROTOCOL:" in out
+    # Sanity: still has the existing structure.
+    assert "TASK:" in out
+    assert "INSTRUCTIONS:" in out
+    assert "SAFETY:" in out
+
+
+def test_wrap_prompt_workflow_protocol_false_omits_sections():
+    """With workflow_protocol=False, both new sections are absent."""
+    from coda_mcp.task_manager import wrap_prompt
+
+    out = wrap_prompt(
+        task_id="t-1",
+        session_id="s-1",
+        email="user@example.com",
+        prompt="do the thing",
+        context=None,
+        results_dir="/tmp/results",
+        workflow_protocol=False,
+    )
+    assert "CAPABILITIES:" not in out
+    assert "WORKFLOW PROTOCOL:" not in out
+    # Existing sections are still present.
+    assert "TASK:" in out
+    assert "INSTRUCTIONS:" in out
+
+
+def test_wrap_prompt_workflow_protocol_default_is_true():
+    """Signature inspection: default value of workflow_protocol is True."""
+    import inspect
+    from coda_mcp.task_manager import wrap_prompt
+
+    sig = inspect.signature(wrap_prompt)
+    assert "workflow_protocol" in sig.parameters
+    assert sig.parameters["workflow_protocol"].default is True
+
+
+def test_create_task_signature_has_workflow_protocol_param():
+    """create_task accepts workflow_protocol kwarg with default True."""
+    import inspect
+    from coda_mcp.task_manager import create_task
+
+    sig = inspect.signature(create_task)
+    assert "workflow_protocol" in sig.parameters
+    assert sig.parameters["workflow_protocol"].default is True
+
+
+def test_create_task_forwards_workflow_protocol_to_wrap_prompt(monkeypatch, tmp_path):
+    """create_task must pass workflow_protocol through to wrap_prompt."""
+    from coda_mcp import task_manager
+
+    captured: dict = {}
+
+    def fake_wrap_prompt(**kwargs):
+        captured.update(kwargs)
+        return "DUMMY PROMPT"
+
+    monkeypatch.setattr(task_manager, "wrap_prompt", fake_wrap_prompt)
+    monkeypatch.setattr(task_manager, "_session_dir", lambda sid: str(tmp_path))
+    monkeypatch.setattr(task_manager, "_task_dir", lambda sid, tid: str(tmp_path))
+    # Stub _read_session so create_task sees a valid ready session without disk I/O.
+    monkeypatch.setattr(
+        task_manager,
+        "_read_session",
+        lambda sid: {"session_id": sid, "status": "ready", "current_task": None, "completed_tasks": []},
+    )
+    # _write_json is the real helper used inside create_task (writes meta.json + session file).
+    # Stub it out — we're testing flag pass-through, not filesystem behavior.
+    monkeypatch.setattr(task_manager, "_write_json", lambda *a, **kw: None)
+    monkeypatch.setattr(task_manager.os, "makedirs", lambda *a, **kw: None)
+    # Stub the file-open for prompt.txt and status.jsonl writes.
+    real_open = open
+    def fake_open(path, mode="r", *args, **kwargs):
+        if ("prompt.txt" in str(path) or "status.jsonl" in str(path)) and "w" in mode:
+            import io
+            return io.StringIO()
+        return real_open(path, mode, *args, **kwargs)
+    monkeypatch.setattr("builtins.open", fake_open)
+
+    task_manager.create_task(
+        session_id="s-1",
+        prompt="x",
+        email="u@example.com",
+        workflow_protocol=False,
+    )
+    assert captured.get("workflow_protocol") is False
+
+
+def test_coda_run_signature_has_workflow_protocol_param():
+    """coda_run accepts workflow_protocol kwarg with default True."""
+    import inspect
+    from coda_mcp import mcp_server
+
+    sig = inspect.signature(mcp_server.coda_run)
+    assert "workflow_protocol" in sig.parameters
+    assert sig.parameters["workflow_protocol"].default is True
