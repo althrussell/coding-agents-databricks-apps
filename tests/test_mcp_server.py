@@ -449,6 +449,11 @@ class TestInteractiveHelpers:
         assert _safe_dirname("/") == "workspace"
         assert _safe_dirname("") == "workspace"
 
+    def test_safe_dirname_rejects_traversal(self):
+        from coda_mcp.mcp_server import _safe_dirname
+        assert _safe_dirname("/foo/..") == "workspace"
+        assert _safe_dirname("/foo/.") == "workspace"
+
     def test_normalize_strips_workspace_prefix(self):
         from coda_mcp.mcp_server import _normalize_workspace_path
         assert _normalize_workspace_path("/Workspace/Users/x/WAM") == "/Users/x/WAM"

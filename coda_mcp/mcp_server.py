@@ -333,7 +333,12 @@ def _safe_dirname(workspace_path: str) -> str:
     """Local directory name for the pulled folder = sanitized basename."""
     base = os.path.basename(workspace_path.rstrip("/"))
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", base)
-    return safe or "workspace"
+    # Reject empty and the traversal names "." / ".." — `.` and `-` are allowed
+    # by the regex, so a basename of ".." would otherwise make ./<name> escape
+    # or alias the project dir.
+    if safe in ("", ".", ".."):
+        return "workspace"
+    return safe
 
 
 def _normalize_workspace_path(workspace_path: str) -> str:
