@@ -22,6 +22,18 @@ from utils import (
     resolve_mlflow_experiment_id,
 )
 
+
+def resolve_codex_catalog_src() -> Path:
+    """Repo-root .codex/databricks-models.json — the bundled model catalog that
+    setup copies into ~/.codex (referenced by config.toml's model_catalog_json).
+
+    Resolves from the repo root (parent of setup/), NOT Path(__file__).parent:
+    this script moved into setup/ in fec2152 while .codex/ stayed at the repo
+    root, so the old lookup silently skipped the catalog copy and Codex's
+    config.toml then pointed at a missing model_catalog_json."""
+    return Path(__file__).resolve().parent.parent / ".codex" / "databricks-models.json"
+
+
 # Set HOME if not properly set
 if not os.environ.get("HOME") or os.environ["HOME"] == "/":
     os.environ["HOME"] = "/app/python/source_code"
@@ -102,7 +114,7 @@ codex_dir.mkdir(exist_ok=True)
 
 # Copy bundled Databricks model catalog into ~/.codex so it can be referenced
 # by relative path in config.toml (codex resolves relatives against CODEX_HOME).
-catalog_src = Path(__file__).parent / ".codex" / "databricks-models.json"
+catalog_src = resolve_codex_catalog_src()
 catalog_dst = codex_dir / "databricks-models.json"
 if catalog_src.exists() and catalog_src.resolve() != catalog_dst.resolve():
     shutil.copyfile(catalog_src, catalog_dst)

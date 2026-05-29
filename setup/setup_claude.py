@@ -6,6 +6,18 @@ from pathlib import Path
 
 from utils import discover_serving_endpoints, ensure_https, get_gateway_host, pick_in_geo_model
 
+
+def resolve_agents_src() -> Path:
+    """Repo-root agents/ dir holding the bundled subagent .md files that setup
+    copies into ~/.claude/agents (build-feature, prd-writer, test-generator,
+    implementer).
+
+    Resolves from the repo root (parent of setup/), NOT Path(__file__).parent:
+    this script moved into setup/ in fec2152 while agents/ stayed at the repo
+    root, so the old lookup silently skipped subagent install."""
+    return Path(__file__).resolve().parent.parent / "agents"
+
+
 # Set HOME if not properly set
 if not os.environ.get("HOME") or os.environ["HOME"] == "/":
     os.environ["HOME"] = "/app/python/source_code"
@@ -165,7 +177,7 @@ else:
 
 # 4. Copy subagent definitions to ~/.claude/agents/
 # These enable TDD workflow: prd-writer → test-generator → implementer → build-feature
-agents_src = Path(__file__).parent / "agents"
+agents_src = resolve_agents_src()
 agents_dst = claude_dir / "agents"
 agents_dst.mkdir(exist_ok=True)
 
