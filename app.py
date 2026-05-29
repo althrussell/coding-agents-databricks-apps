@@ -949,7 +949,23 @@ def read_pty_output(session_id, fd):
 
 
 def terminate_session(session_id, pid, master_fd):
-    """Gracefully terminate a session: SIGHUP -> wait -> SIGKILL -> cleanup."""
+    """Gracefully terminate a session: SIGHUP -> wait -> SIGKILL -> cleanup.
+
+    Idempotent. Both the explicit close path (``mcp_close_pty_session``) and the
+    read-thread exit path (``read_pty_output``) call this for the same session.
+    We atomically *claim* the session by popping it from ``sessions`` — only the
+    caller that wins the pop kills the process and closes ``master_fd``. This
+    guarantees ``os.close()`` runs exactly once: a second close could land on a
+    since-reused fd (e.g. an asyncio event loop's self-pipe allocated by a later
+    test) and corrupt unrelated I/O, surfacing as intermittent EBADF.
+    """
+    # Atomically claim the session. If it's already gone, the other teardown
+    # path handled it — bail out WITHOUT touching the (possibly reused) fd.
+    with sessions_lock:
+        sess = sessions.pop(session_id, None)
+    if sess is None:
+        return
+
     logger.info(f"Terminating stale session {session_id} (pid={pid})")
 
     # Notify WebSocket clients that the session is closed
@@ -957,17 +973,14 @@ def terminate_session(session_id, pid, master_fd):
 
     # Close transcript handle (if any) under per-session lock; swap-then-close
     # outside the lock to avoid blocking on slow filesystems.
-    with sessions_lock:
-        sess = sessions.get(session_id)
-    if sess is not None:
-        with sess["lock"]:
-            transcript_fh = sess.get("transcript_fh")
-            sess["transcript_fh"] = None
-        if transcript_fh is not None:
-            try:
-                transcript_fh.close()
-            except Exception:
-                pass
+    with sess["lock"]:
+        transcript_fh = sess.get("transcript_fh")
+        sess["transcript_fh"] = None
+    if transcript_fh is not None:
+        try:
+            transcript_fh.close()
+        except Exception:
+            pass
 
     try:
         os.kill(pid, signal.SIGHUP)
@@ -984,9 +997,6 @@ def terminate_session(session_id, pid, master_fd):
         os.close(master_fd)
     except OSError:
         pass  # Process or fd already gone
-
-    with sessions_lock:
-        sessions.pop(session_id, None)
 
     # Clean up the project dir if coda_interactive created one.
     # Done here (not in mcp_close_pty_session) so BOTH the graceful close
