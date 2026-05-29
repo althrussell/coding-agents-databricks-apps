@@ -432,3 +432,45 @@ def test_coda_get_result_includes_viewer_url(tmp_path, monkeypatch):
     result = json.loads(result_json)
     assert "viewer_url" in result
     assert "?session=pty-xyz" in result["viewer_url"]
+
+
+class TestInteractiveHelpers:
+    def test_safe_dirname_basename(self):
+        from coda_mcp.mcp_server import _safe_dirname
+        assert _safe_dirname("/Users/x@y.com/WAM") == "WAM"
+        assert _safe_dirname("/Users/x@y.com/WAM/") == "WAM"
+
+    def test_safe_dirname_sanitizes(self):
+        from coda_mcp.mcp_server import _safe_dirname
+        assert _safe_dirname("/Users/x/My Project!") == "My_Project_"
+
+    def test_safe_dirname_empty_fallback(self):
+        from coda_mcp.mcp_server import _safe_dirname
+        assert _safe_dirname("/") == "workspace"
+        assert _safe_dirname("") == "workspace"
+
+    def test_normalize_strips_workspace_prefix(self):
+        from coda_mcp.mcp_server import _normalize_workspace_path
+        assert _normalize_workspace_path("/Workspace/Users/x/WAM") == "/Users/x/WAM"
+
+    def test_normalize_leaves_plain_path(self):
+        from coda_mcp.mcp_server import _normalize_workspace_path
+        assert _normalize_workspace_path("/Users/x/WAM") == "/Users/x/WAM"
+        assert _normalize_workspace_path("/Users/x/WAM/") == "/Users/x/WAM"
+
+    @pytest.mark.asyncio
+    async def test_wait_for_agent_ready_delegates(self, monkeypatch):
+        """_wait_for_agent_ready calls _wait_for_output_stable with prompt-seed constants."""
+        from coda_mcp import mcp_server
+        seen = {}
+
+        async def fake_stable(pty, max_wait, stability):
+            seen["args"] = (pty, max_wait, stability)
+
+        monkeypatch.setattr(mcp_server, "_wait_for_output_stable", fake_stable)
+        await mcp_server._wait_for_agent_ready("pty-1")
+        assert seen["args"] == (
+            "pty-1",
+            mcp_server._PROMPT_SEED_MAX_WAIT_S,
+            mcp_server._PROMPT_SEED_STABILITY_S,
+        )

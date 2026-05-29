@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import threading
@@ -333,6 +334,25 @@ async def coda_run(
         return json.dumps({"status": "error", "error": str(exc)})
 
 
+def _safe_dirname(workspace_path: str) -> str:
+    """Local directory name for the pulled folder = sanitized basename."""
+    base = os.path.basename(workspace_path.rstrip("/"))
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", base)
+    return safe or "workspace"
+
+
+def _normalize_workspace_path(workspace_path: str) -> str:
+    """Canonical Workspace API path: drop the /Workspace FUSE prefix if present.
+
+    The deployed terminal's CLI uses the unprefixed form (/Users/...); REST
+    accepts both, but normalizing matches what the CLI expects and is harmless.
+    """
+    p = workspace_path.rstrip("/")
+    if p.startswith("/Workspace/"):
+        p = p[len("/Workspace"):]
+    return p
+
+
 _ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
 
 # Wait for the agent's TUI to settle by polling the PTY output buffer. Returns
@@ -341,18 +361,24 @@ _ALLOWED_AGENTS = {"claude", "hermes", "codex", "gemini", "opencode"}
 # hardcoded sleep that didn't adapt to slow agent cold-starts.
 _PROMPT_SEED_MAX_WAIT_S = 5.0
 _PROMPT_SEED_STABILITY_S = 1.0
+# Terminal-side `databricks workspace export-dir` pull (coda_interactive). Generous
+# budget — export-dir prints per-file, so output keeps growing during an active
+# pull and won't prematurely stabilize.
+_EXPORT_MAX_WAIT_S = 120.0
+_EXPORT_STABILITY_S = 1.5
 
 
-async def _wait_for_agent_ready(pty_session_id: str) -> None:
-    """Poll the PTY output buffer; return when the buffer stabilizes or max-wait elapses.
+async def _wait_for_output_stable(
+    pty_session_id: str, max_wait: float, stability: float
+) -> None:
+    """Poll the PTY output buffer; return when it stabilizes or ``max_wait`` elapses.
 
-    Stability = buffer length unchanged for ``_PROMPT_SEED_STABILITY_S`` seconds,
-    after at least one byte has appeared. If the session disappears mid-wait
-    (PTY died), return immediately.
+    Stability = buffer length unchanged for ``stability`` seconds, after at least
+    one byte has appeared. If the session disappears mid-wait (PTY died), return.
     """
     from app import sessions
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + _PROMPT_SEED_MAX_WAIT_S
+    deadline = loop.time() + max_wait
     last_len = -1
     stable_since: float | None = None
     poll_interval = 0.1
@@ -366,11 +392,18 @@ async def _wait_for_agent_ready(pty_session_id: str) -> None:
         if current_len > 0 and current_len == last_len:
             if stable_since is None:
                 stable_since = loop.time()
-            elif (loop.time() - stable_since) >= _PROMPT_SEED_STABILITY_S:
+            elif (loop.time() - stable_since) >= stability:
                 return
         else:
             stable_since = None
             last_len = current_len
+
+
+async def _wait_for_agent_ready(pty_session_id: str) -> None:
+    """Wait for an agent TUI to settle (prompt-seed budget). Wrapper for back-compat."""
+    await _wait_for_output_stable(
+        pty_session_id, _PROMPT_SEED_MAX_WAIT_S, _PROMPT_SEED_STABILITY_S
+    )
 
 
 _AGENT_LAUNCH_CMDS = {
