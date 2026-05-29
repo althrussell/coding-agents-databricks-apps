@@ -286,7 +286,17 @@ def test_instructions_drop_stale_export_wording_and_keep_contract():
         or "plain workspace folder" in lowered
         or "plain folder" in lowered
     )
-    assert "upload" in lowered or "workspace.import" in lowered
+    # Local-agent contract: must tell a local caller to copy local files INTO the
+    # Workspace first, with the concrete command, since the tool can't see local disk.
+    assert "import-dir" in lowered, "instructions must give the `workspace import-dir` command"
+    assert "local" in lowered, "instructions must address the local-agent case"
+
+
+def test_docstring_tells_local_callers_to_import_dir():
+    """coda_interactive's own docstring carries the local-upload guidance too."""
+    doc = (mcp_server.coda_interactive.__doc__ or "").lower()
+    assert "import-dir" in doc
+    assert "cannot read your local filesystem" in doc
 
 
 # ── preserved wait-helper behavior tests (now via the wrapper) ────────

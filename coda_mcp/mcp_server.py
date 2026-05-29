@@ -83,11 +83,17 @@ mcp = FastMCP(
         "drive a coding agent in CoDA — not autonomous execution — call "
         "coda_interactive instead of coda_run. The tool reads files from a "
         "directory that already exists in the Databricks Workspace (a Git "
-        "Folder or a plain Workspace folder — either works). If your working "
-        "files are not yet in the Workspace, upload them first (workspace.import "
-        "via the Databricks SDK, REST, or CLI — any of these) into a folder "
-        "the user can read, then pass that folder as workspace_path. The tool "
-        "does NOT accept inline file payloads. If the directory is a Git "
+        "Folder or a plain Workspace folder — either works). IMPORTANT: this "
+        "tool runs inside CoDA on Databricks and reads ONLY from the Databricks "
+        "Workspace — it CANNOT see your local filesystem. If you are a LOCAL "
+        "agent (e.g. Claude Code or Codex on the user's machine) and the project "
+        "files for this task live locally, you MUST first copy them into the "
+        "Workspace, THEN pass that Workspace path. Easiest: run `databricks "
+        "workspace import-dir <local-project-dir> "
+        "/Workspace/Users/<user-email>/<project-name>` (Databricks CLI; the SDK "
+        "or REST work too), then call coda_interactive with workspace_path set to "
+        "that /Workspace/Users/... path. The tool does NOT accept inline file "
+        "payloads. If the directory is a Git "
         "Folder, ensure the desired branch is checked out first — "
         "the pull is a point-in-time snapshot. The tool copies the directory "
         "into a Coda-local working directory using your credentials (via "
@@ -484,11 +490,16 @@ async def coda_interactive(
 ) -> str:
     """Launch an interactive agent session in CoDA, handed off via a viewer URL.
 
-    The MCP caller passes a Databricks Workspace directory path. CoDA pulls that
-    folder onto the session's disk IN THE TERMINAL (authenticated as you) via
+    The MCP caller passes a Databricks Workspace directory path. This path must
+    already exist in the Databricks Workspace — the tool runs inside CoDA and
+    CANNOT read your local filesystem. If you are a local agent and the project
+    files live locally, FIRST upload them, e.g.
+    ``databricks workspace import-dir <local-dir> /Workspace/Users/<you>/<proj>``,
+    then pass that ``/Workspace/Users/...`` path. CoDA pulls that folder onto the
+    session's disk IN THE TERMINAL (authenticated as you) via
     ``databricks workspace export-dir``, launches the chosen agent (claude
-    default) in the pulled directory, auto-types ``prompt`` as the first user
-    input, and returns a ``viewer_url`` the calling user opens to drive it.
+    default) in the pulled directory, seeds ``prompt`` as the first user input,
+    and returns a ``viewer_url`` the calling user opens to drive it.
 
     If the pull produces no files (bad path or no read access) the tool returns
     a ``status=error`` and does not launch the agent.
