@@ -41,12 +41,10 @@ def test_skills_list_matches_claude_md():
     assert not missing_from_md, (
         f"Skills in code but NOT in CLAUDE.md (update CLAUDE.md): {missing_from_md}"
     )
-    # Every skill in CLAUDE.md's Databricks section must appear in code.
-    # Filter out section/category words that match the regex but aren't skill names.
-    section_noise = {
-        "ai-agents", "data-engineering",  # category labels, hyphenated
-    }
-    missing_from_code = (skill_names_in_md - skills_in_code) - section_noise
+    # Every kebab-case identifier in CLAUDE.md's Databricks section must appear in code.
+    # The regex deliberately matches lowercase-only, so category labels like
+    # "AI & Agents" / "Data Engineering" cannot create false positives.
+    missing_from_code = skill_names_in_md - skills_in_code
     assert not missing_from_code, (
         f"Skills in CLAUDE.md but NOT in code (update databricks_preamble.py): "
         f"{missing_from_code}"
