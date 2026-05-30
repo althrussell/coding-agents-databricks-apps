@@ -9,19 +9,19 @@ from __future__ import annotations
 _DATABRICKS_SKILLS: tuple[str, ...] = (
     "agent-bricks",
     "databricks-genie",
-    "databricks-app-python",
-    "databricks-app-apx",
+    "databricks-apps-python",
+    "databricks-ai-functions",
     "databricks-jobs",
     "databricks-unity-catalog",
     "spark-declarative-pipelines",
     "aibi-dashboards",
     "model-serving",
     "mlflow-evaluation",
-    "asset-bundles",
+    "databricks-bundles",
     "databricks-python-sdk",
     "databricks-config",
     "databricks-docs",
-    "synthetic-data-generation",
+    "synthetic-data-gen",
     "unstructured-pdf-generation",
 )
 

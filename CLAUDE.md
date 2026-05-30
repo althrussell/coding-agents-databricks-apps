@@ -8,10 +8,10 @@ Welcome! This environment comes pre-configured with 5 AI coding agents, 43 skill
 
 | Category | Skills |
 |----------|--------|
-| AI & Agents | agent-bricks, databricks-genie, mlflow-evaluation, model-serving |
+| AI & Agents | agent-bricks, databricks-genie, databricks-ai-functions, mlflow-evaluation, model-serving |
 | Analytics | aibi-dashboards, databricks-unity-catalog |
-| Data Engineering | spark-declarative-pipelines, databricks-jobs, synthetic-data-generation |
-| Development | asset-bundles, databricks-app-apx, databricks-app-python, databricks-python-sdk, databricks-config |
+| Data Engineering | spark-declarative-pipelines, databricks-jobs, synthetic-data-gen |
+| Development | databricks-bundles, databricks-apps-python, databricks-python-sdk, databricks-config |
 | Reference | databricks-docs, unstructured-pdf-generation |
 
 ### Development Workflow Skills (14)
