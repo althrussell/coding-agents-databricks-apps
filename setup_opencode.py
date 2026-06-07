@@ -192,8 +192,8 @@ if gateway_host:
                             "output": 16384
                         }
                     },
-                    "databricks-gpt-5-1-codex-max": {
-                        "name": "GPT 5.1 Codex Max (Databricks)",
+                    "databricks-gpt-5-2-codex": {
+                        "name": "GPT 5.2 Codex (Databricks)",
                         "limit": {
                             "context": 200000,
                             "output": 16384

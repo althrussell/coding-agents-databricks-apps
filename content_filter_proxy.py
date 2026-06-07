@@ -83,9 +83,12 @@ GEMINI_UNSUPPORTED_SCHEMA_KEYS = {
     "$schema", "$ref", "$defs", "$id", "$comment", "additionalProperties",
 }
 
-# Top-level request fields that Gemini doesn't support
-GEMINI_UNSUPPORTED_REQUEST_KEYS = {
+# Top-level request fields that Databricks' chat-completions endpoint rejects:
+#   stream_options       — Gemini-route rejection
+#   reasoningSummary     — Responses-API-only; chat-completions doesn't know it
+UNSUPPORTED_REQUEST_KEYS = {
     "stream_options",
+    "reasoningSummary",
 }
 
 
@@ -122,8 +125,7 @@ def sanitize_tool_schemas(data):
         if "parameters" in func:
             func["parameters"] = strip_unsupported_schema_keys(func["parameters"])
 
-    # Strip unsupported top-level fields
-    for key in GEMINI_UNSUPPORTED_REQUEST_KEYS:
+    for key in UNSUPPORTED_REQUEST_KEYS:
         if key in data:
             log.info(f"  Stripped top-level field: {key}")
             del data[key]
