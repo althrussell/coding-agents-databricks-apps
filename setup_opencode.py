@@ -131,6 +131,15 @@ if gateway_host:
     # Gateway mode: route through content-filter proxy proxy for content block sanitization
     # content-filter proxy forwards clean requests to Databricks AI Gateway
     # OpenAI/GPT models go direct (not affected by the empty content block bug)
+    #
+    # NOTE: do NOT set `options.apiKey` here. Opencode treats any defined apiKey
+    # (including empty string from a failed `{env:...}` interpolation) as the
+    # final value and *will not* fall back to ~/.local/share/opencode/auth.json.
+    # The terminal session strips DATABRICKS_TOKEN from the env (see app.py
+    # _scrub_secrets), so `{env:DATABRICKS_TOKEN}` resolves to "" → 401s on the
+    # databricks-openai provider. Leaving apiKey undefined lets opencode read
+    # the freshly-rotated token straight from auth.json (see opencode
+    # packages/opencode/src/provider/provider.ts L1683).
     opencode_config = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
@@ -138,8 +147,7 @@ if gateway_host:
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Databricks AI Gateway (via content-filter proxy)",
                 "options": {
-                    "baseURL": CONTENT_FILTER_PROXY_URL,
-                    "apiKey": "{env:DATABRICKS_TOKEN}"
+                    "baseURL": CONTENT_FILTER_PROXY_URL
                 },
                 "models": {
                     "databricks-claude-opus-4-6": {
@@ -151,6 +159,13 @@ if gateway_host:
                     },
                     "databricks-claude-sonnet-4-6": {
                         "name": "Claude Sonnet 4.6 (Databricks)",
+                        "limit": {
+                            "context": 200000,
+                            "output": 8192
+                        }
+                    },
+                    "databricks-claude-haiku-4-5": {
+                        "name": "Claude Haiku 4.5 (Databricks)",
                         "limit": {
                             "context": 200000,
                             "output": 8192
@@ -170,13 +185,6 @@ if gateway_host:
                             "output": 8192
                         }
                     },
-                    "databricks-gemini-2-5-pro": {
-                        "name": "Gemini 2.5 Pro (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
                 }
             },
             "databricks-openai": {
@@ -184,7 +192,6 @@ if gateway_host:
                 "name": "Databricks AI Gateway (OpenAI)",
                 "options": {
                     "baseURL": f"{gateway_host}/openai/v1",
-                    "apiKey": "{env:DATABRICKS_TOKEN}",
                     "compatibility": "compatible"
                 },
                 "models": {
@@ -211,6 +218,7 @@ if gateway_host:
 else:
     # Fallback: route through content-filter proxy proxy for content block sanitization
     # content-filter proxy forwards clean requests to Databricks serving endpoints
+    # See gateway-mode comment above for why options.apiKey is omitted.
     opencode_config = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
@@ -218,8 +226,7 @@ else:
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Databricks Model Serving (via content-filter proxy)",
                 "options": {
-                    "baseURL": CONTENT_FILTER_PROXY_URL,
-                    "apiKey": "{env:DATABRICKS_TOKEN}"
+                    "baseURL": CONTENT_FILTER_PROXY_URL
                 },
                 "models": {
                     "databricks-claude-opus-4-6": {
@@ -236,15 +243,15 @@ else:
                             "output": 8192
                         }
                     },
-                    "databricks-gemini-2-5-flash": {
-                        "name": "Gemini 2.5 Flash (Databricks)",
+                    "databricks-claude-haiku-4-5": {
+                        "name": "Claude Haiku 4.5 (Databricks)",
                         "limit": {
-                            "context": 1000000,
+                            "context": 200000,
                             "output": 8192
                         }
                     },
-                    "databricks-gemini-2-5-pro": {
-                        "name": "Gemini 2.5 Pro (Databricks)",
+                    "databricks-gemini-2-5-flash": {
+                        "name": "Gemini 2.5 Flash (Databricks)",
                         "limit": {
                             "context": 1000000,
                             "output": 8192
