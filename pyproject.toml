@@ -15,7 +15,7 @@ dependencies = [
     # Security floors — make CVE-driven minimums explicit so future resolves
     # can't silently downgrade. See PR description for advisory IDs.
     "gitpython>=3.1.50",
-    "python-multipart>=0.0.29",
+    "python-multipart>=0.0.30",
     # GHSA-qccp-gfcp-xxvc + GHSA-mf9v-mfxr-j63j — urllib3 < 2.7.0 leaks
     # sensitive headers across proxied redirects and bypasses the
     # decompression-bomb safeguard. urllib3 is transitive; pin a floor
