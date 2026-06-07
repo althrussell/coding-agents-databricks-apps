@@ -85,6 +85,12 @@ GEMINI_UNSUPPORTED_SCHEMA_KEYS = {
 
 UNSUPPORTED_REQUEST_KEYS = {
     "stream_options",
+}
+
+# Reasoning fields that Databricks' chat-completions route rejects for OpenAI's
+# GPT-5.x family (those models require /v1/responses). Other model families
+# (Claude, Gemini) accept reasoning_effort because the gateway translates it.
+GPT_REASONING_KEYS = {
     "reasoningSummary",
     "reasoning_effort",
 }
@@ -108,17 +114,13 @@ def strip_unsupported_schema_keys(obj):
 
 
 def sanitize_tool_schemas(data):
-    """Strip JSON Schema keywords that some providers reject.
+    """Strip JSON Schema keywords and request fields that downstream rejects.
 
-    Applied universally — $schema, additionalProperties etc. are never
-    required by any downstream API. Claude/GPT ignore them, Gemini rejects them.
-    Stripping for all models is safe and avoids model detection issues.
+    $schema/additionalProperties etc. are never required by any downstream API.
+    reasoning fields are GPT-only — Claude/Gemini need them preserved so the
+    gateway can translate to thinking_budget / thinkingConfig.
     """
-    tools = data.get("tools", [])
-    if not tools:
-        return data
-
-    for tool in tools:
+    for tool in data.get("tools", []) or []:
         func = tool.get("function", {})
         if "parameters" in func:
             func["parameters"] = strip_unsupported_schema_keys(func["parameters"])
@@ -128,7 +130,13 @@ def sanitize_tool_schemas(data):
             log.info(f"  Stripped top-level field: {key}")
             del data[key]
 
-    # Strip $schema from top level if present
+    model = (data.get("model") or "").lower()
+    if "gpt" in model:
+        for key in GPT_REASONING_KEYS:
+            if key in data:
+                log.info(f"  Stripped GPT reasoning field: {key} (model={model})")
+                del data[key]
+
     data.pop("$schema", None)
 
     return data
