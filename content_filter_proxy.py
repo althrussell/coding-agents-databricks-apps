@@ -328,28 +328,41 @@ def remap_tool_call(tool_call):
     return tool_call
 
 
+def _flatten_content_blocks(content):
+    """Collapse Anthropic-style content arrays into the plain string opencode expects."""
+    if not isinstance(content, list):
+        return content
+    parts = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            txt = block.get("text")
+            if isinstance(txt, str):
+                parts.append(txt)
+    return "".join(parts)
+
+
 def fix_response_data(data):
-    """Fix tool names and finish_reason in a parsed response object."""
+    """Fix tool names, finish_reason, and Gemini content-block arrays."""
     if not isinstance(data, dict):
         return data
 
     for choice in data.get("choices", []):
-        # Non-streaming: choice.message
         message = choice.get("message", {})
+        if "content" in message:
+            message["content"] = _flatten_content_blocks(message["content"])
         tool_calls = message.get("tool_calls", [])
         if tool_calls:
             message["tool_calls"] = [remap_tool_call(tc) for tc in tool_calls]
-            # Fix finish_reason: should be "tool_calls" if tools are invoked
             if choice.get("finish_reason") == "stop" and tool_calls:
                 choice["finish_reason"] = "tool_calls"
 
-        # Streaming: choice.delta
         delta = choice.get("delta", {})
+        if "content" in delta:
+            delta["content"] = _flatten_content_blocks(delta["content"])
         delta_tool_calls = delta.get("tool_calls", [])
         if delta_tool_calls:
             delta["tool_calls"] = [remap_tool_call(tc) for tc in delta_tool_calls]
 
-        # Fix finish_reason for streaming chunks
         if choice.get("finish_reason") == "stop" and delta_tool_calls:
             choice["finish_reason"] = "tool_calls"
 

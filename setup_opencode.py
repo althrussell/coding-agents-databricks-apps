@@ -175,6 +175,20 @@ if gateway_host:
                             "output": 8192
                         }
                     },
+                    "databricks-gemini-3-5-flash": {
+                        "name": "Gemini 3.5 Flash (Databricks)",
+                        "limit": {
+                            "context": 1000000,
+                            "output": 8192
+                        }
+                    },
+                    "databricks-gemini-3-1-flash-lite": {
+                        "name": "Gemini 3.1 Flash Lite (Databricks)",
+                        "limit": {
+                            "context": 1000000,
+                            "output": 8192
+                        }
+                    },
                 }
             },
             "databricks-openai": {
@@ -247,6 +261,20 @@ else:
                     },
                     "databricks-gemini-2-5-pro": {
                         "name": "Gemini 2.5 Pro (Databricks)",
+                        "limit": {
+                            "context": 1000000,
+                            "output": 8192
+                        }
+                    },
+                    "databricks-gemini-3-5-flash": {
+                        "name": "Gemini 3.5 Flash (Databricks)",
+                        "limit": {
+                            "context": 1000000,
+                            "output": 8192
+                        }
+                    },
+                    "databricks-gemini-3-1-flash-lite": {
+                        "name": "Gemini 3.1 Flash Lite (Databricks)",
                         "limit": {
                             "context": 1000000,
                             "output": 8192
