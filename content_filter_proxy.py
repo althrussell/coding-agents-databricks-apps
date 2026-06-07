@@ -81,6 +81,7 @@ if not log.handlers:
 # JSON Schema keywords that Gemini doesn't support
 GEMINI_UNSUPPORTED_SCHEMA_KEYS = {
     "$schema", "$ref", "$defs", "$id", "$comment", "additionalProperties",
+    "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "uniqueItems",
 }
 
 UNSUPPORTED_REQUEST_KEYS = {
