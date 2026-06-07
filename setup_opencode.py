@@ -127,165 +127,48 @@ if exa_url := exa_mcp_url():
         "enabled": True,
     }
 
+CTX_200K = {"context": 200000, "output": 8192}
+CTX_200K_LONG = {"context": 200000, "output": 16384}
+CTX_1M = {"context": 1000000, "output": 8192}
+
+PROXY_MODELS = {
+    "databricks-claude-opus-4-6":      {"name": "Claude Opus 4.6 (Databricks)",      "limit": CTX_200K_LONG},
+    "databricks-claude-sonnet-4-6":    {"name": "Claude Sonnet 4.6 (Databricks)",    "limit": CTX_200K},
+    "databricks-claude-haiku-4-5":     {"name": "Claude Haiku 4.5 (Databricks)",     "limit": CTX_200K},
+    "databricks-gemini-2-5-flash":     {"name": "Gemini 2.5 Flash (Databricks)",     "limit": CTX_1M},
+    "databricks-gemini-2-5-pro":       {"name": "Gemini 2.5 Pro (Databricks)",       "limit": CTX_1M},
+    "databricks-gemini-3-5-flash":     {"name": "Gemini 3.5 Flash (Databricks)",     "limit": CTX_1M},
+    "databricks-gemini-3-1-flash-lite":{"name": "Gemini 3.1 Flash Lite (Databricks)","limit": CTX_1M},
+}
+
+OPENAI_MODELS = {
+    "databricks-gpt-5-3-codex": {"name": "GPT 5.3 Codex (Databricks)", "limit": CTX_200K_LONG},
+    "databricks-gpt-5-2-codex": {"name": "GPT 5.2 Codex (Databricks)", "limit": CTX_200K_LONG},
+}
+
+providers = {
+    "databricks": {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Databricks AI Gateway (via content-filter proxy)" if gateway_host
+                else "Databricks Model Serving (via content-filter proxy)",
+        "options": {"baseURL": CONTENT_FILTER_PROXY_URL},
+        "models": PROXY_MODELS,
+    },
+}
 if gateway_host:
-    # Gateway mode: route Claude/Gemini through the content-filter proxy;
-    # GPT/Codex go direct (proxy only handles Anthropic-style payloads).
-    opencode_config = {
-        "$schema": "https://opencode.ai/config.json",
-        "provider": {
-            "databricks": {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "Databricks AI Gateway (via content-filter proxy)",
-                "options": {
-                    "baseURL": CONTENT_FILTER_PROXY_URL
-                },
-                "models": {
-                    "databricks-claude-opus-4-6": {
-                        "name": "Claude Opus 4.6 (Databricks)",
-                        "limit": {
-                            "context": 200000,
-                            "output": 16384
-                        }
-                    },
-                    "databricks-claude-sonnet-4-6": {
-                        "name": "Claude Sonnet 4.6 (Databricks)",
-                        "limit": {
-                            "context": 200000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-claude-haiku-4-5": {
-                        "name": "Claude Haiku 4.5 (Databricks)",
-                        "limit": {
-                            "context": 200000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-2-5-flash": {
-                        "name": "Gemini 2.5 Flash (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-2-5-pro": {
-                        "name": "Gemini 2.5 Pro (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-3-5-flash": {
-                        "name": "Gemini 3.5 Flash (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-3-1-flash-lite": {
-                        "name": "Gemini 3.1 Flash Lite (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                }
-            },
-            "databricks-openai": {
-                "npm": "@ai-sdk/openai",
-                "name": "Databricks AI Gateway (OpenAI)",
-                "options": {
-                    "baseURL": f"{gateway_host}/openai/v1",
-                    "compatibility": "compatible"
-                },
-                "models": {
-                    "databricks-gpt-5-3-codex": {
-                        "name": "GPT 5.3 Codex (Databricks)",
-                        "limit": {
-                            "context": 200000,
-                            "output": 16384
-                        }
-                    },
-                    "databricks-gpt-5-2-codex": {
-                        "name": "GPT 5.2 Codex (Databricks)",
-                        "limit": {
-                            "context": 200000,
-                            "output": 16384
-                        }
-                    }
-                }
-            }
-        },
-        "mcp": _mcp_servers,
-        "model": f"databricks/{anthropic_model}"
+    providers["databricks-openai"] = {
+        "npm": "@ai-sdk/openai",
+        "name": "Databricks AI Gateway (OpenAI)",
+        "options": {"baseURL": f"{gateway_host}/openai/v1", "compatibility": "compatible"},
+        "models": OPENAI_MODELS,
     }
-else:
-    # Fallback (no AI Gateway): route through the content-filter proxy.
-    opencode_config = {
-        "$schema": "https://opencode.ai/config.json",
-        "provider": {
-            "databricks": {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "Databricks Model Serving (via content-filter proxy)",
-                "options": {
-                    "baseURL": CONTENT_FILTER_PROXY_URL
-                },
-                "models": {
-                    "databricks-claude-opus-4-6": {
-                        "name": "Claude Opus 4.6 (Databricks)",
-                        "limit": {
-                            "context": 200000,
-                            "output": 16384
-                        }
-                    },
-                    "databricks-claude-sonnet-4-6": {
-                        "name": "Claude Sonnet 4.6 (Databricks)",
-                        "limit": {
-                            "context": 200000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-claude-haiku-4-5": {
-                        "name": "Claude Haiku 4.5 (Databricks)",
-                        "limit": {
-                            "context": 200000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-2-5-flash": {
-                        "name": "Gemini 2.5 Flash (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-2-5-pro": {
-                        "name": "Gemini 2.5 Pro (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-3-5-flash": {
-                        "name": "Gemini 3.5 Flash (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                    "databricks-gemini-3-1-flash-lite": {
-                        "name": "Gemini 3.1 Flash Lite (Databricks)",
-                        "limit": {
-                            "context": 1000000,
-                            "output": 8192
-                        }
-                    },
-                }
-            }
-        },
-        "mcp": _mcp_servers,
-        "model": f"databricks/{anthropic_model}"
-    }
+
+opencode_config = {
+    "$schema": "https://opencode.ai/config.json",
+    "provider": providers,
+    "mcp": _mcp_servers,
+    "model": f"databricks/{anthropic_model}",
+}
 
 config_path = opencode_config_dir / "opencode.json"
 config_path.write_text(json.dumps(opencode_config, indent=2))
