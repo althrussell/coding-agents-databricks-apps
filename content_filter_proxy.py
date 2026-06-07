@@ -87,9 +87,6 @@ UNSUPPORTED_REQUEST_KEYS = {
     "stream_options",
 }
 
-# Reasoning fields that Databricks' chat-completions route rejects for OpenAI's
-# GPT-5.x family (those models require /v1/responses). Other model families
-# (Claude, Gemini) accept reasoning_effort because the gateway translates it.
 GPT_REASONING_KEYS = {
     "reasoningSummary",
     "reasoning_effort",
@@ -114,12 +111,7 @@ def strip_unsupported_schema_keys(obj):
 
 
 def sanitize_tool_schemas(data):
-    """Strip JSON Schema keywords and request fields that downstream rejects.
-
-    $schema/additionalProperties etc. are never required by any downstream API.
-    reasoning fields are GPT-only — Claude/Gemini need them preserved so the
-    gateway can translate to thinking_budget / thinkingConfig.
-    """
+    """Strip JSON Schema keywords and request fields that downstream rejects."""
     for tool in data.get("tools", []) or []:
         func = tool.get("function", {})
         if "parameters" in func:
