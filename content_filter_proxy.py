@@ -83,12 +83,10 @@ GEMINI_UNSUPPORTED_SCHEMA_KEYS = {
     "$schema", "$ref", "$defs", "$id", "$comment", "additionalProperties",
 }
 
-# Top-level request fields that Databricks' chat-completions endpoint rejects:
-#   stream_options       — Gemini-route rejection
-#   reasoningSummary     — Responses-API-only; chat-completions doesn't know it
 UNSUPPORTED_REQUEST_KEYS = {
     "stream_options",
     "reasoningSummary",
+    "reasoning_effort",
 }
 
 
