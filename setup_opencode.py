@@ -128,18 +128,8 @@ if exa_url := exa_mcp_url():
     }
 
 if gateway_host:
-    # Gateway mode: route through content-filter proxy proxy for content block sanitization
-    # content-filter proxy forwards clean requests to Databricks AI Gateway
-    # OpenAI/GPT models go direct (not affected by the empty content block bug)
-    #
-    # NOTE: do NOT set `options.apiKey` here. Opencode treats any defined apiKey
-    # (including empty string from a failed `{env:...}` interpolation) as the
-    # final value and *will not* fall back to ~/.local/share/opencode/auth.json.
-    # The terminal session strips DATABRICKS_TOKEN from the env (see app.py
-    # _scrub_secrets), so `{env:DATABRICKS_TOKEN}` resolves to "" → 401s on the
-    # databricks-openai provider. Leaving apiKey undefined lets opencode read
-    # the freshly-rotated token straight from auth.json (see opencode
-    # packages/opencode/src/provider/provider.ts L1683).
+    # Gateway mode: route Claude/Gemini through the content-filter proxy;
+    # GPT/Codex go direct (proxy only handles Anthropic-style payloads).
     opencode_config = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
@@ -216,9 +206,7 @@ if gateway_host:
         "model": f"databricks/{anthropic_model}"
     }
 else:
-    # Fallback: route through content-filter proxy proxy for content block sanitization
-    # content-filter proxy forwards clean requests to Databricks serving endpoints
-    # See gateway-mode comment above for why options.apiKey is omitted.
+    # Fallback (no AI Gateway): route through the content-filter proxy.
     opencode_config = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
@@ -282,18 +270,12 @@ opencode_data_dir.mkdir(parents=True, exist_ok=True)
 
 if gateway_host:
     auth_data = {
-        "databricks": {
-            "api_key": gateway_token
-        },
-        "databricks-openai": {
-            "api_key": gateway_token
-        }
+        "databricks": {"type": "api", "key": gateway_token},
+        "databricks-openai": {"type": "api", "key": gateway_token},
     }
 else:
     auth_data = {
-        "databricks": {
-            "api_key": token
-        }
+        "databricks": {"type": "api", "key": token},
     }
 
 auth_path = opencode_data_dir / "auth.json"

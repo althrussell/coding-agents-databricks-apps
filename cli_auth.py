@@ -46,15 +46,15 @@ def _update_codex(token):
 
 
 def _update_opencode(token):
-    """Update api_key values in ~/.local/share/opencode/auth.json."""
+    """Update key values in ~/.local/share/opencode/auth.json."""
     path = os.path.join(_HOME, ".local", "share", "opencode", "auth.json")
     try:
         with open(path) as f:
             auth = json.load(f)
         changed = False
         for provider in auth.values():
-            if isinstance(provider, dict) and "api_key" in provider:
-                provider["api_key"] = token
+            if isinstance(provider, dict) and provider.get("type") == "api" and "key" in provider:
+                provider["key"] = token
                 changed = True
         if changed:
             with open(path, "w") as f:

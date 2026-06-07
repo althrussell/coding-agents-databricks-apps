@@ -52,18 +52,21 @@ class TestUpdateCodex:
 
 
 class TestUpdateOpenCode:
-    def test_updates_api_key_in_auth_json(self, isolated_home):
+    def test_updates_key_in_auth_json(self, isolated_home):
         from cli_auth import update_cli_tokens
         auth_dir = isolated_home / ".local" / "share" / "opencode"
         auth_dir.mkdir(parents=True)
-        auth = {"databricks": {"api_key": "old"}, "databricks-openai": {"api_key": "old"}}
+        auth = {
+            "databricks": {"type": "api", "key": "old"},
+            "databricks-openai": {"type": "api", "key": "old"},
+        }
         (auth_dir / "auth.json").write_text(json.dumps(auth))
 
         update_cli_tokens("new-token")
 
         result = json.loads((auth_dir / "auth.json").read_text())
-        assert result["databricks"]["api_key"] == "new-token"
-        assert result["databricks-openai"]["api_key"] == "new-token"
+        assert result["databricks"]["key"] == "new-token"
+        assert result["databricks-openai"]["key"] == "new-token"
 
     def test_skips_missing_file(self, isolated_home):
         from cli_auth import update_cli_tokens
@@ -105,7 +108,9 @@ class TestAllCLIsUpdated:
 
         oc_dir = isolated_home / ".local" / "share" / "opencode"
         oc_dir.mkdir(parents=True)
-        (oc_dir / "auth.json").write_text(json.dumps({"databricks": {"api_key": "old"}}))
+        (oc_dir / "auth.json").write_text(
+            json.dumps({"databricks": {"type": "api", "key": "old"}})
+        )
 
         gemini_dir = isolated_home / ".gemini"
         gemini_dir.mkdir()
@@ -116,5 +121,5 @@ class TestAllCLIsUpdated:
 
         assert json.loads((claude_dir / "settings.json").read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == "rotated-token"
         assert "OPENAI_API_KEY=rotated-token" in (codex_dir / ".env").read_text()
-        assert json.loads((oc_dir / "auth.json").read_text())["databricks"]["api_key"] == "rotated-token"
+        assert json.loads((oc_dir / "auth.json").read_text())["databricks"]["key"] == "rotated-token"
         assert "GEMINI_API_KEY=rotated-token" in (gemini_dir / ".env").read_text()
