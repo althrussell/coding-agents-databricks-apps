@@ -101,11 +101,15 @@ GPT_REASONING_KEYS = {
 def strip_unsupported_schema_keys(obj):
     """Recursively strip JSON Schema keywords that Gemini doesn't support."""
     if isinstance(obj, dict):
-        return {
+        cleaned = {
             k: strip_unsupported_schema_keys(v)
             for k, v in obj.items()
             if k not in GEMINI_UNSUPPORTED_SCHEMA_KEYS
         }
+        if cleaned.get("type") == "integer":
+            cleaned.pop("minimum", None)
+            cleaned.pop("maximum", None)
+        return cleaned
     elif isinstance(obj, list):
         return [strip_unsupported_schema_keys(item) for item in obj]
     return obj

@@ -146,6 +146,58 @@ OPENAI_MODELS = {
     "databricks-gpt-5-2-codex": {"name": "GPT 5.2 Codex (Databricks)", "limit": CTX_200K_LONG},
 }
 
+import urllib.request
+
+_UA = {"User-Agent": "coda-setup/1.0"}
+
+
+def _fetch_served_chat_models(host_url, bearer):
+    """Return {endpoint_name: display_name} for ready llm/v1/chat endpoints."""
+    req = urllib.request.Request(
+        f"{host_url}/api/2.0/serving-endpoints",
+        headers={"Authorization": f"Bearer {bearer}", **_UA},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read())
+    served = {}
+    for ep in (data.get("endpoints") or []):
+        if ep.get("task") != "llm/v1/chat":
+            continue
+        if (ep.get("state") or {}).get("ready") != "READY":
+            continue
+        name = ep.get("name") or ""
+        if not name.startswith("databricks-"):
+            continue
+        fm = ((ep.get("config") or {}).get("served_entities") or [{}])[0].get("foundation_model") or {}
+        served[name] = fm.get("display_name") or name
+    return served
+
+
+def _fetch_models_dev_databricks_ids():
+    req = urllib.request.Request("https://models.dev/api.json", headers=_UA)
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read())
+    return set((data.get("databricks") or {}).get("models", {}).keys())
+
+
+try:
+    _served = _fetch_served_chat_models(host, token)
+    _catalog = _fetch_models_dev_databricks_ids()
+    _already = set(PROXY_MODELS) | set(OPENAI_MODELS)
+    _hidden = [mid for mid in _catalog if mid not in _served]
+    _new = [mid for mid in _served if mid not in _catalog and mid not in _already]
+    for mid in _hidden:
+        PROXY_MODELS.setdefault(mid, {})["enabled"] = False
+    for mid in _new:
+        PROXY_MODELS[mid] = {
+            "name": f"{_served[mid]} (Databricks)",
+            "limit": CTX_200K,
+        }
+    print(f"Workspace introspection: hid {len(_hidden)} unserved catalog model(s), surfaced {len(_new)} workspace-exclusive model(s)")
+except Exception as _e:
+    print(f"Workspace introspection skipped: {_e}")
+
+
 providers = {
     "databricks": {
         "npm": "@ai-sdk/openai-compatible",
@@ -165,6 +217,7 @@ if gateway_host:
 
 opencode_config = {
     "$schema": "https://opencode.ai/config.json",
+    "enabled_providers": list(providers.keys()),
     "provider": providers,
     "mcp": _mcp_servers,
     "model": f"databricks/{anthropic_model}",
