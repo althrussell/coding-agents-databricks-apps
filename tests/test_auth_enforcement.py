@@ -328,3 +328,96 @@ class TestCaseInsensitiveAuth:
             assert result == "user@example.com", (
                 f"get_request_user() should lowercase, got '{result}'"
             )
+
+
+# ---------------------------------------------------------------------------
+# 3. Additional-authorized-emails allowlist (SP-deployed / workshop apps)
+# ---------------------------------------------------------------------------
+
+class TestAdditionalAuthorizedEmails:
+    """When the app is deployed by a service principal, the resolved owner is
+    the SP — not a usable human login — so attendees/operators must be
+    authorized via the CONTROL_TOWER_AUTHORIZED_EMAILS (or AUTHORIZED_EMAILS)
+    allowlist. The allowlist is additive and wins even if the owner is
+    unresolved; an empty allowlist leaves single-user behavior unchanged.
+    """
+
+    def test_http_allows_allowlisted_non_owner(self):
+        app_module = _get_app_module()
+        original_owner = app_module.app_owner
+        try:
+            app_module.app_owner = "sp-client-id"  # SP, not a real login
+            with mock.patch.dict(
+                "os.environ",
+                {"CONTROL_TOWER_AUTHORIZED_EMAILS": "attendee@databricks.com, op@databricks.com"},
+            ), mock.patch.object(app_module, "_is_databricks_apps", return_value=True), \
+                 app_module.app.test_request_context(
+                     headers={"X-Forwarded-Email": "Attendee@Databricks.com"}
+                 ):
+                authorized, _ = app_module.check_authorization()
+                assert authorized is True
+        finally:
+            app_module.app_owner = original_owner
+
+    def test_ws_allows_allowlisted_non_owner(self):
+        app_module = _get_app_module()
+        original_owner = app_module.app_owner
+        try:
+            app_module.app_owner = "sp-client-id"
+            with mock.patch.dict(
+                "os.environ", {"AUTHORIZED_EMAILS": "attendee@databricks.com"}
+            ), mock.patch.object(app_module, "_is_databricks_apps", return_value=True), \
+                 app_module.app.test_request_context(
+                     headers={"X-Forwarded-Email": "attendee@databricks.com"}
+                 ):
+                assert app_module._check_ws_authorization() is True
+        finally:
+            app_module.app_owner = original_owner
+
+    def test_allowlist_wins_when_owner_unresolved(self):
+        app_module = _get_app_module()
+        original_owner = app_module.app_owner
+        try:
+            app_module.app_owner = None  # owner resolution failed
+            with mock.patch.dict(
+                "os.environ", {"CONTROL_TOWER_AUTHORIZED_EMAILS": "attendee@databricks.com"}
+            ), mock.patch.object(app_module, "_is_databricks_apps", return_value=True), \
+                 app_module.app.test_request_context(
+                     headers={"X-Forwarded-Email": "attendee@databricks.com"}
+                 ):
+                authorized, _ = app_module.check_authorization()
+                assert authorized is True
+        finally:
+            app_module.app_owner = original_owner
+
+    def test_non_allowlisted_still_denied(self):
+        app_module = _get_app_module()
+        original_owner = app_module.app_owner
+        try:
+            app_module.app_owner = "sp-client-id"
+            with mock.patch.dict(
+                "os.environ", {"CONTROL_TOWER_AUTHORIZED_EMAILS": "attendee@databricks.com"}
+            ), mock.patch.object(app_module, "_is_databricks_apps", return_value=True), \
+                 app_module.app.test_request_context(
+                     headers={"X-Forwarded-Email": "intruder@evil.com"}
+                 ):
+                authorized, user = app_module.check_authorization()
+                assert authorized is False
+                assert user == "intruder@evil.com"
+        finally:
+            app_module.app_owner = original_owner
+
+    def test_empty_allowlist_preserves_single_user(self):
+        app_module = _get_app_module()
+        original_owner = app_module.app_owner
+        try:
+            app_module.app_owner = "owner@databricks.com"
+            with mock.patch.dict("os.environ", {}, clear=False), \
+                 mock.patch.object(app_module, "_is_databricks_apps", return_value=True), \
+                 app_module.app.test_request_context(
+                     headers={"X-Forwarded-Email": "intruder@evil.com"}
+                 ):
+                authorized, _ = app_module.check_authorization()
+                assert authorized is False
+        finally:
+            app_module.app_owner = original_owner

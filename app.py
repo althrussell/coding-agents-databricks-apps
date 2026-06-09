@@ -516,6 +516,30 @@ def _is_databricks_apps():
     return os.environ.get("DATABRICKS_APP_PORT") or os.path.isdir("/app/python/source_code")
 
 
+def _additional_authorized_emails():
+    """Emails allowed to use the app *in addition to* the resolved owner.
+
+    The default single-user model authorizes only the app's creator. When the
+    app is deployed by a service principal (e.g. an automated workshop/lab
+    provisioner), the creator is the SP — whose identity is not a usable human
+    login — so no attendee could ever pass the check. Set
+    ``CONTROL_TOWER_AUTHORIZED_EMAILS`` (or ``AUTHORIZED_EMAILS``) to a
+    comma-separated list of emails (attendee + operators) to authorize them
+    explicitly. Empty by default, so standard single-user deployments are
+    unchanged.
+    """
+    raw = (
+        os.environ.get("CONTROL_TOWER_AUTHORIZED_EMAILS", "")
+        or os.environ.get("AUTHORIZED_EMAILS", "")
+    )
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def _is_allowlisted(current_user):
+    """True if ``current_user`` is in the explicit additional-authorized set."""
+    return bool(current_user) and current_user in _additional_authorized_emails()
+
+
 def check_authorization():
     """Check if the current user is authorized to access the app.
 
@@ -524,14 +548,20 @@ def check_authorization():
     Fails open only for local development.
     Fixes: https://github.com/datasciencemonkey/coding-agents-databricks-apps/issues/57
     """
+    current_user = get_request_user()
+
+    # Explicit allowlist wins — and works even when the owner couldn't be
+    # resolved (e.g. SP-deployed apps). Checked first so attendees/operators
+    # get in regardless of who created the app.
+    if _is_allowlisted(current_user):
+        return True, None
+
     # Fail closed on Databricks Apps if owner couldn't be resolved
     if not app_owner:
         if _is_databricks_apps():
             logger.error("SECURITY: app_owner not resolved — denying all access (fail-closed)")
             return False, "unknown"
         return True, None  # Local dev only
-
-    current_user = get_request_user()
 
     # If no user identity in request (local dev), allow access
     if not current_user:
@@ -554,12 +584,6 @@ def _check_ws_authorization():
     Fails CLOSED on Databricks Apps: if app_owner is unresolved or no user identity
     in headers, deny WebSocket access. Matches the HTTP handler's behavior exactly.
     """
-    if not app_owner:
-        if _is_databricks_apps():
-            logger.error("SECURITY: app_owner not resolved — denying WebSocket (fail-closed)")
-            return False
-        return True  # Local dev only
-
     # Socket.IO passes HTTP headers from the initial handshake via request context
     raw_user = (
         request.headers.get("X-Forwarded-Email")
@@ -567,6 +591,17 @@ def _check_ws_authorization():
         or request.headers.get("X-Databricks-User-Email")
     )
     current_user = raw_user.lower() if raw_user else raw_user
+
+    # Explicit allowlist wins (mirrors check_authorization), even if the owner
+    # couldn't be resolved.
+    if _is_allowlisted(current_user):
+        return True
+
+    if not app_owner:
+        if _is_databricks_apps():
+            logger.error("SECURITY: app_owner not resolved — denying WebSocket (fail-closed)")
+            return False
+        return True  # Local dev only
 
     if not current_user:
         if _is_databricks_apps():
@@ -1012,8 +1047,9 @@ def configure_pat():
     # Databricks Apps; this guard short-circuits to "allow" only when owner
     # resolution failed (matches the rest of the auth surface's behaviour).
     if _is_databricks_apps() and app_owner:
-        if get_request_user() != app_owner:
-            logger.warning(f"Rejected configure-pat from non-owner {get_request_user()} (owner: {app_owner})")
+        _req_user = get_request_user()
+        if _req_user != app_owner and not _is_allowlisted(_req_user):
+            logger.warning(f"Rejected configure-pat from non-owner {_req_user} (owner: {app_owner})")
             return jsonify({"error": "Forbidden"}), 403
 
     # Idempotency / defence-in-depth: bootstrap is single-shot. Once a PAT
