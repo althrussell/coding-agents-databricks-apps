@@ -46,27 +46,48 @@ settings["env"]["MLFLOW_EXPERIMENT_NAME"] = experiment_name
 settings["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
 
 # Add Stop hook (processes full transcript at session end).
-# The hook is harmless when MLFLOW_CLAUDE_TRACING_ENABLED=false — mlflow's
-# stop_hook_handler short-circuits if tracing isn't enabled.
+#
+# The hook is wired even when tracing is disabled so the flag can be flipped at
+# runtime without rerunning setup. It MUST be import-safe: the default
+# dependency is mlflow-skinny (no mlflow.claude_code) and full mlflow is only
+# present when tracing is opted in — so we invoke a small wrapper that swallows
+# a missing-module import instead of inlining the import in the command. An
+# inline import made every agent turn print "Stop hook error: No module named
+# 'mlflow'". The wrapper lives beside this file in the deployed app source.
+import shlex
+
 python_cmd = "uv run python"
+hook_script = str(Path(__file__).resolve().with_name("mlflow_stop_hook.py"))
 mlflow_hook = {
     "hooks": [
         {
             "type": "command",
-            "command": f"{python_cmd} -c \"from mlflow.claude_code.hooks import stop_hook_handler; stop_hook_handler()\""
+            "command": f"{python_cmd} {shlex.quote(hook_script)}",
         }
     ]
 }
 
 existing_hooks = settings.get("hooks", {})
 stop_hooks = existing_hooks.get("Stop", [])
-# Avoid duplicating the hook if setup runs multiple times
-already_present = any(
-    "stop_hook_handler" in h.get("hooks", [{}])[0].get("command", "")
-    for h in stop_hooks if isinstance(h, dict)
-)
-if not already_present:
-    stop_hooks.append(mlflow_hook)
+
+
+def _is_mlflow_stop_hook(h: dict) -> bool:
+    """True for any mlflow tracing Stop hook — new wrapper OR old inline import.
+
+    Dropping the old inline-import variant on upgrade is essential: re-running
+    setup over a settings.json that still carries the broken
+    ``... import stop_hook_handler ...`` command would otherwise leave it
+    alongside the safe wrapper, and it'd keep erroring every turn.
+    """
+    if not isinstance(h, dict):
+        return False
+    cmd = h.get("hooks", [{}])[0].get("command", "")
+    return "mlflow_stop_hook.py" in cmd or "mlflow.claude_code.hooks" in cmd
+
+
+# Replace any existing mlflow Stop hook (new or legacy) with the single safe one.
+stop_hooks = [h for h in stop_hooks if not _is_mlflow_stop_hook(h)]
+stop_hooks.append(mlflow_hook)
 existing_hooks["Stop"] = stop_hooks
 settings["hooks"] = existing_hooks
 

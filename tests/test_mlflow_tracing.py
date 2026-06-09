@@ -125,8 +125,52 @@ class TestStopHook:
         settings = read_settings(tmp_path)
         hook = settings["hooks"]["Stop"][0]["hooks"][0]
         assert hook["type"] == "command"
-        assert "stop_hook_handler" in hook["command"]
-        assert "mlflow.claude_code.hooks" in hook["command"]
+        # The hook invokes the import-safe wrapper rather than inlining the
+        # mlflow import (which errors under mlflow-skinny / tracing disabled).
+        assert "mlflow_stop_hook.py" in hook["command"]
+        # No inline mlflow import in the command — that's what errored on every
+        # turn under mlflow-skinny.
+        assert "mlflow.claude_code.hooks" not in hook["command"]
+
+    def test_stop_hook_wrapper_is_import_safe(self, tmp_path):
+        """The wrapper must exit 0 even when mlflow can't be imported."""
+        import subprocess
+        import sys
+
+        wrapper = Path(__file__).parent.parent / "mlflow_stop_hook.py"
+        assert wrapper.exists()
+        # Run with an empty module search path entry first won't block stdlib,
+        # but mlflow isn't installed in CI's bare env for this subprocess —
+        # either way a missing module must yield a clean exit, not a traceback.
+        result = subprocess.run(
+            [sys.executable, str(wrapper)],
+            capture_output=True,
+            text=True,
+            env={"PATH": os.environ.get("PATH", "")},
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_stop_hook_replaces_legacy_inline_hook(self, tmp_path):
+        """Re-running setup over the old inline-import hook drops it (no dup)."""
+        write_existing_settings(tmp_path, {
+            "env": {},
+            "hooks": {
+                "Stop": [
+                    {"hooks": [{
+                        "type": "command",
+                        "command": "uv run python -c \"from mlflow.claude_code.hooks import stop_hook_handler; stop_hook_handler()\"",
+                    }]}
+                ]
+            },
+        })
+        result = run_setup_mlflow(tmp_path, {"APP_OWNER": "jane@company.com"})
+        assert result.returncode == 0
+        settings = read_settings(tmp_path)
+        stop = settings["hooks"]["Stop"]
+        assert len(stop) == 1
+        cmd = stop[0]["hooks"][0]["command"]
+        assert "mlflow_stop_hook.py" in cmd
+        assert "mlflow.claude_code.hooks" not in cmd
 
 
 # ---------------------------------------------------------------------------
