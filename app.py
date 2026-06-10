@@ -25,6 +25,7 @@ import app_state
 import enterprise_config
 from utils import ensure_https, get_gateway_host
 from pat_rotator import PATRotator
+from obo_auth import OBOTokenManager
 from telemetry import log_telemetry, set_product_info
 
 # Sanitize DATABRICKS_TOKEN early — the platform sometimes injects trailing
@@ -71,6 +72,11 @@ sessions_lock = threading.Lock()
 pat_rotator = PATRotator(
     session_count_fn=lambda: len(sessions),
 )
+
+# OBO agent auth (lab only): captures the attendee's forwarded user token and
+# pumps it into the agent CLIs so they act AS the attendee. Dormant unless the
+# CODA_OBO_ENABLED gate resolves on (see _obo_enabled / _agent_auth_mode).
+obo_manager = OBOTokenManager()
 
 # SIGTERM graceful shutdown: notify clients before gunicorn stops the worker
 shutting_down = False
@@ -595,6 +601,28 @@ def _configure_all_cli_auth(token):
             logger.warning(f"CLI config error: {script}: {e}")
 
 
+def _maybe_trigger_setup():
+    """Start run_setup() in the background if it hasn't completed. Idempotent."""
+    with setup_lock:
+        if setup_state["status"] == "complete":
+            return False
+    threading.Thread(target=run_setup, daemon=True, name="setup-thread").start()
+    logger.info("Setup triggered")
+    return True
+
+
+def _capture_obo(headers):
+    """In obo mode: capture the forwarded user token; trigger setup on first capture.
+
+    No-op unless the OBO gate is active (lab + CODA_OBO_ENABLED). Idempotent — the
+    manager dedupes unchanged tokens, so this is safe to call on every request.
+    """
+    if _agent_auth_mode() != "obo":
+        return
+    if obo_manager.update_from_headers(headers):
+        _maybe_trigger_setup()
+
+
 def run_setup():
     with setup_lock:
         setup_state["status"] = "running"
@@ -799,6 +827,33 @@ def _coda_auth_mode():
     return mode if mode in _VALID_AUTH_MODES else "owner"
 
 
+def _obo_enabled(env=None):
+    """Dedicated gate for OBO (on-behalf-of-user) agent auth. **On by default.**
+
+    In OBO mode the coding-agent CLIs authenticate as the attendee via the
+    forwarded user token (``x-forwarded-access-token``) instead of a pasted PAT,
+    so everything they build/deploy is owned by the attendee. OBO's refresh model
+    is browser-driven (the token is re-captured on inbound requests + a keepalive),
+    which only suits attended lab/workshop sessions — so the gate is **hard-gated
+    to lab mode** and is ignored entirely outside it (``CODA_PROFILE=full`` →
+    always PAT). Within lab (the default, since CoDA is lab-first) it defaults ON;
+    set ``CODA_OBO_ENABLED=false`` to fall back to the PAT flow.
+    """
+    env = env if env is not None else os.environ
+    if not _lab_mode(env):
+        return False
+    raw = env.get("CODA_OBO_ENABLED")
+    if raw is not None and raw.strip() != "":
+        return _env_truthy(raw)
+    return True
+
+
+def _agent_auth_mode(env=None):
+    """Derived agent-auth mode: ``obo`` when the OBO gate is active, else ``pat``
+    (user pastes a PAT; PATRotator keeps it fresh)."""
+    return "obo" if _obo_enabled(env) else "pat"
+
+
 def _user_is_authorized(current_user):
     """Central authorization decision shared by HTTP, WebSocket, and configure-pat.
 
@@ -893,6 +948,9 @@ def handle_ws_connect():
     if not _check_ws_authorization():
         disconnect()
         return False
+    # The WS handshake carries the forwarded token too — capture it as a reliable
+    # second capture point (idempotent; the manager dedupes unchanged tokens).
+    _capture_obo(request.headers)
     logger.info("WebSocket client connected")
 
 
@@ -1163,7 +1221,7 @@ def cleanup_stale_sessions():
 def authorize_request():
     """Check authorization before processing any request."""
     # Skip auth for health check, setup status, and Socket.IO (has own auth via connect event)
-    if request.path in ("/health", "/api/setup-status", "/api/pat-status", "/api/configure-pat", "/api/app-state") or request.path.startswith("/socket.io"):
+    if request.path in ("/health", "/api/setup-status", "/api/pat-status", "/api/configure-pat", "/api/app-state", "/api/obo-refresh") or request.path.startswith("/socket.io"):
         return None
 
     authorized, user = check_authorization()
@@ -1172,6 +1230,10 @@ def authorize_request():
             "error": "Unauthorized",
             "message": f"This app belongs to {app_owner}. You are logged in as {user}."
         }), 403
+
+    # In OBO mode, every authenticated request carries a fresh forwarded user
+    # token — capture it so the agent CLIs stay authed as the attendee.
+    _capture_obo(request.headers)
 
     return None
 
@@ -1290,6 +1352,13 @@ def get_version():
 def pat_status():
     """Check if a valid, usable PAT is configured."""
     host = ensure_https(os.environ.get("DATABRICKS_HOST", ""))
+
+    # In OBO mode the agents auth with the forwarded user token, not a pasted PAT.
+    # Report "configured" once we've captured one so the UI skips the PAT prompt.
+    if _agent_auth_mode() == "obo" and obo_manager.has_token:
+        return jsonify({"configured": True, "valid": True,
+                        "user": get_request_user() or "user"})
+
     token = os.environ.get("DATABRICKS_TOKEN", "").strip()
 
     if not token or pat_rotator.is_token_expired:
@@ -1309,6 +1378,19 @@ def pat_status():
     except Exception:
         return jsonify({"configured": True, "valid": False,
                        "workspace_host": host})
+
+
+@app.route("/api/obo-refresh")
+def obo_refresh():
+    """Keepalive: re-capture the forwarded user token to keep agents authed.
+
+    The browser hits this every ~20 min; each request carries a fresh
+    ``x-forwarded-access-token`` which ``_capture_obo`` pumps into the agent
+    configs. No-op in PAT mode. Whitelisted from the owner-auth gate so it can't
+    403 a keepalive — it only ever reads the platform-injected token header.
+    """
+    _capture_obo(request.headers)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/configure-pat", methods=["POST"])
@@ -1385,11 +1467,7 @@ def configure_pat():
 
     # Run setup now that we have a valid token (installs CLIs, configures agents)
     # Only run if setup hasn't completed yet
-    with setup_lock:
-        if setup_state["status"] != "complete":
-            setup_thread = threading.Thread(target=run_setup, daemon=True, name="setup-thread")
-            setup_thread.start()
-            logger.info("Setup triggered after PAT configuration")
+    _maybe_trigger_setup()
 
     logger.info(f"PAT configured interactively by {user} — rotation started")
     return jsonify({"status": "ok", "user": user, "message": "Token configured. Auto-rotation started."})
@@ -1699,7 +1777,16 @@ def initialize_app(local_dev=False):
     # Keeping them causes SDK to silently fall back to SP auth when PAT is dead.
     os.environ.pop("DATABRICKS_CLIENT_ID", None)
     os.environ.pop("DATABRICKS_CLIENT_SECRET", None)
-    logger.info("SP credentials stripped — PAT-only auth from this point")
+    logger.info("SP credentials stripped — user-token auth from this point")
+
+    # Agent auth mode (observability). In OBO mode we do NOT await/require a PAT
+    # at boot — setup is kicked off by _capture_obo on the first authenticated
+    # request (the forwarded token arrives with it). PAT mode is unchanged: the
+    # interactive configure-pat flow triggers setup.
+    mode = _agent_auth_mode()
+    logger.info(f"Agent auth mode: {mode}")
+    if mode == "obo":
+        logger.info("OBO mode: agents act as the attendee; setup starts on first forwarded-token capture")
 
     # Telemetry: app startup ping (fire-and-forget in background thread)
     log_telemetry("event", "app_startup")

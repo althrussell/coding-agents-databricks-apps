@@ -47,14 +47,27 @@ import time
 from contextlib import contextmanager
 from typing import Any
 
-# The lab contract: workspace-wide auth + lean profile. These are injected as
-# deployment env vars so Control Tower never has to patch app source/yaml.
+# The lab contract: workspace-wide auth + lean profile + OBO agent auth. These
+# are injected as deployment env vars so Control Tower never has to patch app
+# source/yaml. CODA_OBO_ENABLED is on by default in lab anyway; we set it
+# explicitly to document intent and make it trivial to flip off (=false → PAT).
 LAB_ENV_OVERRIDES: dict[str, str] = {
     "CODA_AUTH_MODE": "workspace",
     "CODA_PROFILE": "lab",
+    "CODA_OBO_ENABLED": "true",
 }
 
+# Workspace-level scope grant required for OBO: the app may request the user's
+# token with these scopes. "all-apis" gives the coding agents the full Databricks
+# API breadth they need to build + deploy as the attendee.
+OBO_SCOPES: list[str] = ["all-apis"]
+
 DEFAULT_GIT_URL = "https://github.com/althrussell/coding-agents-databricks-apps"
+
+
+def default_lab_env() -> dict[str, str]:
+    """The lab contract env as a fresh dict (safe to mutate by the caller)."""
+    return dict(LAB_ENV_OVERRIDES)
 
 
 @contextmanager
@@ -133,12 +146,61 @@ def ensure_repo(
             raise
 
 
-def ensure_app(client: Any, app_name: str, *, poll_seconds: float = 10.0) -> Any:
+def ensure_obo_scopes(client: Any, *, scopes: list[str] | None = None) -> None:
+    """Headlessly grant the workspace-level OBO scope allowlist (idempotent).
+
+    Patches the ``allowed_apps_user_api_scopes`` public workspace setting so apps
+    in this workspace may request the user's token with ``scopes``. Requires
+    workspace-admin auth (Control Tower has it). Re-applying the same value is a
+    no-op on the API side.
+    """
+    from databricks.sdk.service.settingsv2 import (
+        AllowedAppsUserApiScopesMessage,
+        Setting,
+    )
+
+    scopes = scopes if scopes is not None else OBO_SCOPES
+    setting = Setting(
+        name="allowed_apps_user_api_scopes",
+        allowed_apps_user_api_scopes=AllowedAppsUserApiScopesMessage(allowed_scopes=scopes),
+    )
+    with _timed(f"workspace_settings_v2.patch_public_workspace_setting(scopes={scopes})"):
+        client.workspace_settings_v2.patch_public_workspace_setting(
+            name="allowed_apps_user_api_scopes", setting=setting,
+        )
+    print(f"workspace OBO scopes allowed: {scopes}")
+
+
+def enable_obo_and_create_app(client: Any, app_name: str, **app_kwargs: Any) -> Any:
+    """Enable OBO at the workspace level and create the app declaring its scopes.
+
+    Convenience entrypoint for callers (e.g. Control Tower) that want a single
+    call. Order matters: the workspace setting is patched BEFORE the app is
+    created so the app's declared ``user_api_scopes`` are within the allowlist.
+    """
+    from databricks.sdk.service.apps import App
+
+    ensure_obo_scopes(client)
+    return client.apps.create(
+        app=App(name=app_name, user_api_scopes=list(OBO_SCOPES), **app_kwargs)
+    )
+
+
+def ensure_app(
+    client: Any,
+    app_name: str,
+    *,
+    user_api_scopes: list[str] | None = None,
+    poll_seconds: float = 10.0,
+) -> Any:
     """Idempotently ensure an app named ``app_name`` exists and is provisioned.
 
     - If it exists and is not mid-deletion, reuse it.
     - If it is ``DELETING``, wait for the delete to finish, then recreate.
     - Otherwise create it and wait for it to go ACTIVE.
+
+    When ``user_api_scopes`` is given, the app is created declaring those OBO
+    scopes (ignored for an already-existing app — scopes are set at create time).
     """
     from databricks.sdk.service.apps import App
 
@@ -154,8 +216,10 @@ def ensure_app(client: Any, app_name: str, *, poll_seconds: float = 10.0) -> Any
             time.sleep(poll_seconds)
         print("    delete complete.")
 
-    with _timed(f"apps.create_and_wait(App(name={app_name!r}))"):
-        app = client.apps.create_and_wait(App(name=app_name))
+    app_obj = App(name=app_name, user_api_scopes=user_api_scopes) if user_api_scopes \
+        else App(name=app_name)
+    with _timed(f"apps.create_and_wait(App(name={app_name!r}, user_api_scopes={user_api_scopes}))"):
+        app = client.apps.create_and_wait(app_obj)
     print(f"app created: name={app.name} url={getattr(app, 'url', None)}")
     return app
 
@@ -212,6 +276,7 @@ def deploy_lab_app(
     source_path: str | None = None,
     extra_env: dict[str, str] | None = None,
     grant_attendee: bool = True,
+    enable_obo: bool = True,
 ) -> Any:
     """End-to-end idempotent lab deploy. Returns the final app object.
 
@@ -219,7 +284,26 @@ def deploy_lab_app(
     deployed directly from that existing workspace path (e.g. one populated by
     ``databricks sync``). Otherwise the repo is cloned to
     ``/Workspace/Users/<attendee>/<repo>`` first.
+
+    When ``enable_obo`` is set (default), the workspace OBO scope allowlist is
+    patched and the app declares ``user_api_scopes`` so agents can act as the
+    attendee. The scope patch is best-effort: it needs workspace-admin auth, so
+    a non-admin run logs a warning and continues (the deploy still succeeds; OBO
+    can be enabled separately, or attendees fall back to the PAT prompt).
     """
+    app_scopes: list[str] | None = None
+    if enable_obo:
+        try:
+            ensure_obo_scopes(client)
+            app_scopes = list(OBO_SCOPES)
+        except Exception as exc:  # noqa: BLE001 — non-admin / SDK shape: warn, continue
+            print(
+                f"WARNING: could not enable workspace OBO scopes ({exc}). "
+                f"Deploy continues; enable OBO manually or attendees use the PAT "
+                f"fallback.",
+                file=sys.stderr,
+            )
+
     if source_path is None:
         repo_name = derive_repo_name(git_url)
         source_path = f"/Workspace/Users/{attendee}/{repo_name}"
@@ -233,7 +317,7 @@ def deploy_lab_app(
     else:
         print(f"using existing source path (skipping clone): {source_path}")
 
-    ensure_app(client, app_name)
+    ensure_app(client, app_name, user_api_scopes=app_scopes)
     deploy_app(client, app_name, source_path=source_path, env=merge_env(extra_env))
 
     if grant_attendee:

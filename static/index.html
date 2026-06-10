@@ -925,6 +925,15 @@
         if (!userSetTheme) applyTheme('Light');
       })
       .catch(() => {});
+
+    // OBO keepalive: in lab/OBO mode the agents authenticate with the attendee's
+    // forwarded user token (~60 min TTL) which only refreshes on inbound requests.
+    // Ping the refresh endpoint well under the TTL so long agent runs stay authed
+    // while the tab is open. Harmless no-op in PAT mode (endpoint ignores it).
+    setInterval(() => {
+      fetch('/api/obo-refresh', { credentials: 'same-origin' }).catch(() => {});
+    }, 20 * 60 * 1000);
+
     document.getElementById('dictation-send').addEventListener('click', sendDictation);
     document.getElementById('dictation-cancel').addEventListener('click', closeDictation);
     dictationInput.addEventListener('keydown', e => {
