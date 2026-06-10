@@ -1,5 +1,7 @@
 # Deploy to Databricks Apps
 
+> **This is the lab fork** of [`databrickslabs/coding-agents-databricks-apps`](https://github.com/databrickslabs/coding-agents-databricks-apps). It deploys exactly like upstream for single-user use, and additionally supports **workspace-wide auth** + a **lean lab profile** for large-scale, auto-deployed labs. For the lab path, jump to [Large-scale labs (auto-deploy)](#large-scale-labs-auto-deploy). For the rationale, see [About this fork](../README.md#about-this-fork).
+
 ## Prerequisites
 
 - A Databricks workspace with Model Serving endpoints enabled
@@ -11,7 +13,7 @@ The simplest way — no CLI, no cloning, everything stays in the Databricks UI.
 1. Go to **Databricks → Apps → Create App**
 2. Choose **Custom App** and connect this Git repo:
    ```
-   https://github.com/databrickslabs/coding-agents-databricks-apps.git
+   https://github.com/althrussell/coding-agents-databricks-apps.git
    ```
 3. Click **Deploy**
 4. Open the app — on first terminal session, paste a short-lived PAT when prompted
@@ -30,7 +32,7 @@ If you prefer working from the terminal or need more control:
 
 ```bash
 databricks repos create \
-  --url https://github.com/datasciencemonkey/coding-agents-databricks-apps.git \
+  --url https://github.com/althrussell/coding-agents-databricks-apps.git \
   --path /Workspace/Users/<your-email>/apps/coding-agents-databricks-apps
 ```
 
@@ -72,17 +74,50 @@ databricks apps deploy <your-app-name> \
 | `GEMINI_MODEL` | No | Gemini model name (default: `databricks-gemini-2-5-pro`) |
 | `HERMES_MODEL` | No | Hermes model name (default: `databricks-claude-opus-4-7`) |
 | `DATABRICKS_GATEWAY_HOST` | No | AI Gateway URL override. Auto-discovered from `DATABRICKS_WORKSPACE_ID` if unset. Falls back to direct model serving if neither is available |
+| `CODA_AUTH_MODE` | No | Who may use the app: `owner` (default, single user), `allowlist` (explicit emails), or `workspace` (any authenticated workspace user — for labs). See [Authorization modes](#authorization-modes) |
+| `CODA_PROFILE` | No | Agent footprint preset: `full` (default — all agents) or `lab` (lean: Claude + AppKit + Databricks core only). See [docs/lab-build.md](lab-build.md) |
+| `ENABLE_CODEX` / `ENABLE_OPENCODE` / `ENABLE_GEMINI` / `ENABLE_HERMES` | No | Per-agent install toggles. An explicit value always overrides `CODA_PROFILE`. Default `true` |
+| `MLFLOW_TRACING_ENABLED` | No | Set to `"true"` to enable MLflow tracing for Claude, Codex, and Gemini (default `"false"`) |
+
+## Authorization modes
+
+`CODA_AUTH_MODE` controls who may use a deployment (enforced centrally across
+HTTP, WebSocket, and the PAT-setup gate):
+
+| Mode | Who's allowed | Use for |
+|------|---------------|---------|
+| `owner` (default) | The app owner (`app.creator`) plus any emails in `CONTROL_TOWER_AUTHORIZED_EMAILS` / `AUTHORIZED_EMAILS` / `DATABRICKS_APP_AUTHORIZED_EMAIL` | Individual / dogfood use |
+| `allowlist` | Only the explicit allowlist emails (owner resolution not required) | SP-deployed apps with a known attendee set |
+| `workspace` | **Any** authenticated workspace user | Large-scale labs: one isolated instance per attendee in their own workspace |
+
+In `workspace` mode the app no longer needs per-attendee source patching — the
+deployer just sets the env var. See [docs/lab-build.md](lab-build.md) for the
+full lab contract.
 
 ## Security Model
 
-This is a **single-user, zero-config auth** app. No secrets or tokens are required at deploy time.
+The default is a **single-user, zero-config auth** app. No secrets or tokens are required at deploy time.
 
 1. **Owner resolution**: The app owner is determined from `app.creator` via the service principal + Apps API — no PAT needed
-2. **Authorization**: Each request's `X-Forwarded-Email` header is compared against `app.creator`. Non-matching users see 403
-3. **Interactive PAT setup**: On first terminal session, the user pastes a short-lived PAT interactively. All CLIs (Claude, Codex, OpenCode, Gemini, Hermes, Databricks) are configured automatically
+2. **Authorization**: Resolved by `CODA_AUTH_MODE` (default `owner`) — each request's `X-Forwarded-Email` header is checked against the allowed set. Non-matching users see 403 (except in `workspace` mode, which admits any authenticated workspace user)
+3. **Interactive PAT setup**: On first terminal session, the user pastes a short-lived PAT interactively. All enabled CLIs (Claude, Codex, OpenCode, Gemini, Hermes, Databricks) are configured automatically
 4. **Auto-rotation**: PAT rotates every 10 minutes with a 15-minute lifetime. Old tokens are proactively revoked. Maximum leaked-token exposure: 15 minutes
 5. **Session-aware**: Rotation is skipped when no active terminal sessions exist
 6. **On restart**: The user re-pastes a token (no persistence by design)
+
+## Large-scale labs (auto-deploy)
+
+For lab fleets, deploy with workspace-wide auth and the lean profile via the
+idempotent SDK path (the same one Control Tower uses):
+
+```bash
+make lab-deploy PROFILE=<profile> APP_NAME=coda-lab
+make lab-verify PROFILE=<profile> APP_NAME=coda-lab
+```
+
+This sets `CODA_AUTH_MODE=workspace` + `CODA_PROFILE=lab` on the deployment —
+no source edits, no per-attendee patching. `scripts/lab_deploy.py` is
+idempotent and safe to retry. Full details: [docs/lab-build.md](lab-build.md).
 
 ## Gunicorn Configuration
 

@@ -6,6 +6,19 @@ env:
     value: /app/python/source_code
   - name: DATABRICKS_TOKEN
     valueFrom: DATABRICKS_TOKEN
+  # Authorization mode for who may use this app:
+  #   owner      (default) — single-user: only the app owner (plus any emails in
+  #              CONTROL_TOWER_AUTHORIZED_EMAILS / AUTHORIZED_EMAILS /
+  #              DATABRICKS_APP_AUTHORIZED_EMAIL).
+  #   allowlist  — only the explicit allowlist emails (owner also allowed when
+  #              resolved). Owner resolution NOT required — good for SP-deployed
+  #              apps with a known attendee set.
+  #   workspace  — ANY authenticated workspace user. Use for large-scale labs
+  #              where each attendee gets their own isolated app instance, so
+  #              Control Tower no longer needs to patch the app source/allowlist.
+  #              scripts/lab_deploy.py sets this automatically.
+  - name: CODA_AUTH_MODE
+    value: "owner"
   - name: ANTHROPIC_MODEL
     value: databricks-claude-opus-4-6
   - name: GEMINI_MODEL
@@ -14,8 +27,24 @@ env:
     value: databricks-claude-opus-4-7
   - name: HERMES_FALLBACK_MODEL
     value: databricks-claude-opus-4-6
-  # Set ENABLE_HERMES=false to skip Hermes Agent install.
-  # Other CLIs are unaffected.
+  # --- Agent footprint toggles ---------------------------------------------
+  # CODA_PROFILE presets the toggleable-agent defaults:
+  #   full (default)  — install Claude, Codex, OpenCode, Gemini, Hermes.
+  #   lab             — lean: Claude + AppKit + Databricks core only; Codex,
+  #                     OpenCode, Gemini, Hermes are OFF unless explicitly
+  #                     re-enabled via the ENABLE_* vars below.
+  # scripts/lab_deploy.py sets CODA_PROFILE=lab automatically.
+  - name: CODA_PROFILE
+    value: "full"
+  # Per-agent overrides. An explicit value here ALWAYS wins over CODA_PROFILE.
+  # (Claude, AppKit, and the Databricks CLI are core and always installed.)
+  - name: ENABLE_CODEX
+    value: "true"
+  - name: ENABLE_OPENCODE
+    value: "true"
+  - name: ENABLE_GEMINI
+    value: "true"
+  # Set ENABLE_HERMES=false to skip Hermes Agent install. Other CLIs unaffected.
   - name: ENABLE_HERMES
     value: "true"
   #OPTIONAL: Use the new Databricks AI Gateway if you have access (recommended), otherwise it will default to the older endpoint

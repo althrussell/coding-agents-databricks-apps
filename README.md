@@ -1,23 +1,45 @@
 # Coding Agents on Databricks Apps
 
 
-[![Use this template](https://img.shields.io/badge/Use%20this%20template-2ea44f?logo=github)](https://github.com/datasciencemonkey/coding-agents-databricks-apps/generate)
 [![Deploy to Databricks](https://img.shields.io/badge/Deploy-Databricks%20Apps-FF3621?logo=databricks&logoColor=white)](docs/deployment.md)
+[![Lab auto-deploy](https://img.shields.io/badge/Labs-auto--deploy-blueviolet)](docs/lab-build.md)
 [![Agents](https://img.shields.io/badge/Agents-5%20included-green)](#whats-inside)
 [![Skills](https://img.shields.io/badge/Skills-39%20built--in-blue)](#-all-39-skills)
 
-> Run Claude Code, Codex, Gemini CLI, Hermes Agent, and OpenCode in your browser — zero setup, wired to your Databricks workspace.
+> Run Claude Code, Codex, Gemini CLI, Hermes Agent, and OpenCode in your browser — zero setup, wired to your Databricks workspace. Deployable to **one isolated instance per attendee** for large-scale labs.
 
 ---
 
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/40405b46-532a-4f14-82e3-414cb3744684" controls width="900"></video>
-</div>
+## About this fork
+
+This repository is a fork of [`databrickslabs/coding-agents-databricks-apps`](https://github.com/databrickslabs/coding-agents-databricks-apps) (**CoDA**). Upstream CoDA is a polished **single-user** hosted Databricks App that runs coding agents in the browser. This fork keeps everything upstream does and adds what's needed to run CoDA at **large-scale, hands-on lab** scale — where many attendees each get their **own isolated CoDA instance**, provisioned automatically by [Control Tower](https://github.com/althrussell/databricks-labs-control-tower).
+
+**Why fork instead of using upstream directly?**
+
+- **Workspace-wide auth.** Upstream is hard-wired to single-owner authorization, so a lab orchestrator had to *patch the app source per attendee* to let each user in. That's brittle and version-coupled. This fork adds `CODA_AUTH_MODE` (`owner` | `allowlist` | `workspace`) so a lab can be deployed **unmodified** — Control Tower just sets one env var and walks away.
+- **Lean lab footprint.** A lab rarely needs all five agents on every instance. `CODA_PROFILE=lab` trims the boot to Claude + the app-build path + Databricks core, cutting startup time and image weight across a large fleet. The full build stays the default for individual use.
+- **Zero-prompt app UX.** Lab attendees should get a polished app from a one-line prompt. This fork makes **Databricks AppKit + Lakebase** the default app builder with a CoDA-owned opinionated UX layer, instead of a blank Streamlit script.
+- **Idempotent auto-deploy.** `scripts/lab_deploy.py` mirrors Control Tower's exact SDK path so a single operator and the orchestrator converge on the identical deployment, and re-runs converge instead of erroring.
+
+**What this repo is used for:** standing up coding-agent lab environments at scale — one isolated, workspace-authed CoDA instance per attendee — while remaining a drop-in superset of upstream for everyday single-user use.
+
+**What changed vs upstream (high level):**
+
+| Area | Upstream | This fork |
+|------|----------|-----------|
+| Authorization | Single owner only | `CODA_AUTH_MODE`: `owner` / `allowlist` / `workspace` |
+| Agent footprint | All agents always installed | `CODA_PROFILE` + `ENABLE_*` toggles (`full` / `lab`) |
+| Default app builder | Python frameworks | AppKit + Lakebase (zero-prompt UX layer), Python opt-in |
+| Lab deploy | Manual / source-patched | `scripts/lab_deploy.py` + `make lab-deploy` (idempotent SDK path) |
+
+> New here for a lab? Jump to **[Large-scale labs (auto-deploy)](#large-scale-labs-auto-deploy)** and the **[Lab build guide](docs/lab-build.md)**.
+
+---
 
 ## Screenshots
 
 <div align="center">
-  <img src="docs/screenshots/demo.gif" width="900" alt="CODA demo — splash screen, multi-tab terminals, keyboard shortcuts"/>
+  <img src="docs/screenshots/demo.gif" width="900" alt="CoDA demo — splash screen, multi-tab terminals, keyboard shortcuts"/>
 </div>
 
 ---
@@ -46,15 +68,7 @@ CoDA runs as a hosted Databricks App inside your tenancy, alongside **Genie Code
 
 Every agent installs at boot and connects to your **Databricks AI Gateway** — on first terminal session, paste a short-lived PAT and all CLIs are configured automatically. Token auto-rotates every 10 minutes.
 
-### 📺 Setup walkthrough (6 min)
-
-Want to see CoDA installed and running end-to-end? Click the thumbnail to watch the full walkthrough on YouTube.
-
-<div align="center">
-  <a href="https://youtu.be/ofqBQ26_e9o">
-    <img src="docs/screenshots/setup-walkthrough-poster.jpg" width="900" alt="Getting Started with CoDA — 6-minute setup walkthrough (click to watch on YouTube)"/>
-  </a>
-</div>
+**Building apps?** The agents default to **Databricks AppKit + Lakebase** (React + Vite + TypeScript with a Postgres backend and a built-in design system) with a CoDA opinionated UX layer for zero-prompt polish — Python frameworks (Streamlit, Dash, etc.) remain available as explicit opt-ins.
 
 ---
 
@@ -155,26 +169,41 @@ Tracing setup is skipped gracefully when `APP_OWNER` is not set (e.g., local dev
 
 ## Quick Start
 
-### Deploy to Databricks Apps
+### Deploy to Databricks Apps (single user)
 
-1. Click [**Use this template**](https://github.com/datasciencemonkey/coding-agents-databricks-apps/generate) to create your own repo
-2. Go to **Databricks → Apps → Create App**
-3. Choose **Custom App** and connect your new repo
-4. Deploy
-5. Open the app — paste a short-lived PAT when prompted on first terminal session
+1. Go to **Databricks → Apps → Create App**
+2. Choose **Custom App** and connect this repo:
+   ```
+   https://github.com/althrussell/coding-agents-databricks-apps.git
+   ```
+3. Deploy
+4. Open the app — paste a short-lived PAT when prompted on first terminal session
 
 That's it. No secrets to configure, no pre-deployment setup.
 
 [→ Full deployment guide](docs/deployment.md) — environment variables, gateway config, and advanced options.
 
-### Run locally
+### Large-scale labs (auto-deploy)
 
-1. Click [**Use this template**](https://github.com/datasciencemonkey/coding-agents-databricks-apps/generate) to create your own repo
-2. Clone your new repo and run:
+Running a lab for many attendees? Deploy with workspace-wide auth and a lean
+agent footprint via the idempotent SDK path (the same one Control Tower uses):
 
 ```bash
-git clone https://github.com/<you>/<your-repo>.git
-cd <your-repo>
+make lab-deploy PROFILE=<profile> APP_NAME=coda-lab
+make lab-verify PROFILE=<profile> APP_NAME=coda-lab
+```
+
+This sets `CODA_AUTH_MODE=workspace` (any authenticated workspace user) and
+`CODA_PROFILE=lab` (Claude + AppKit + Databricks core only) on the deployment —
+no source edits or per-attendee patching required.
+
+[→ Lab build guide](docs/lab-build.md) — full vs lean footprint, the Control Tower contract, and verification.
+
+### Run locally
+
+```bash
+git clone https://github.com/althrussell/coding-agents-databricks-apps.git
+cd coding-agents-databricks-apps
 uv run python app.py
 ```
 
@@ -308,7 +337,9 @@ Open [http://localhost:8000](http://localhost:8000) — type `claude`, `codex`, 
 | `GEMINI_MODEL` | No | Gemini model name (default: `databricks-gemini-2-5-pro`) |
 | `HERMES_MODEL` | No | Hermes model name (default: `databricks-claude-opus-4-6`) |
 | `HERMES_FALLBACK_MODEL` | No | Fallback model if `HERMES_MODEL` is unavailable in this workspace's geo |
-| `ENABLE_HERMES` | No | Set to `"false"` to skip Hermes Agent install. Other CLIs are unaffected. Default `"true"` |
+| `CODA_AUTH_MODE` | No | Who may use the app: `owner` (default), `allowlist`, or `workspace` (any authenticated user — for labs). See [deployment guide](docs/deployment.md#authorization-modes) |
+| `CODA_PROFILE` | No | Agent footprint: `full` (default — all agents) or `lab` (lean: Claude + AppKit + Databricks core only). See [docs/lab-build.md](docs/lab-build.md) |
+| `ENABLE_CODEX` / `ENABLE_OPENCODE` / `ENABLE_GEMINI` / `ENABLE_HERMES` | No | Per-agent install toggles. An explicit value always overrides `CODA_PROFILE`. Default `"true"` |
 | `MAX_CONCURRENT_SESSIONS` | No | Cap on simultaneous PTY sessions per worker (default `5`) |
 | `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | No | Pass-through to Claude Code's auto-memory feature (default `0`) |
 | `MLFLOW_TRACING_ENABLED` | No | Set to `"true"` to enable MLflow tracing for Claude, Codex, and Gemini in one switch (default `"false"`) |
@@ -319,7 +350,7 @@ Open [http://localhost:8000](http://localhost:8000) — type `claude`, `codex`, 
 
 ### Security Model
 
-Single-user app — the owner is resolved via the app's service principal and Apps API (`app.creator`), with no PAT required at deploy time. Authorization checks `X-Forwarded-Email` against `app.creator`. On first terminal session, the user pastes a short-lived PAT interactively. Tokens auto-rotate every 10 minutes (15-minute lifetime), with old tokens proactively revoked. On restart, the user re-pastes (no persistence by design).
+Single-user by default — the owner is resolved via the app's service principal and Apps API (`app.creator`), with no PAT required at deploy time. Authorization is resolved by **`CODA_AUTH_MODE`** (`owner` | `allowlist` | `workspace`): `owner` checks `X-Forwarded-Email` against `app.creator`; `allowlist` restricts to explicit emails; `workspace` admits any authenticated workspace user (used for [large-scale labs](docs/lab-build.md), one isolated instance per attendee). On first terminal session, the user pastes a short-lived PAT interactively. Tokens auto-rotate every 10 minutes (15-minute lifetime), with old tokens proactively revoked. On restart, the user re-pastes (no persistence by design).
 
 ### Gunicorn
 

@@ -75,6 +75,23 @@ Before starting any new project or documentation:
 
 3. **Then start working** - your commits will be backed up to Workspace
 
+## Building Apps — default to AppKit + Lakebase
+
+When the user asks to build an app, dashboard, tool, or UI **without naming a
+framework**, the default is **AppKit** (React + Vite + TypeScript) with a
+**Lakebase** (Postgres) backend — NOT Streamlit, NOT Dash, NOT a Delta-backed
+Python app. This is a hard default, not a preference.
+
+- Follow the **databricks-apps-python** skill. Scaffold with `databricks apps init`
+  (AppKit template + Lakebase plugin), then immediately apply the CoDA UX
+  defaults in the skill's `7-appkit-ux.md` (branded app shell, theme provider +
+  light/dark, mandatory loading/empty/error states, responsive layout, lucide
+  icons, and the app-type→layout map). New apps should look polished with no UX
+  prompting from the user.
+- Use a Python framework (Streamlit/Dash/Gradio/Flask/FastAPI/Reflex) ONLY when
+  the user explicitly names one, explicitly wants Python, or you are extending
+  an existing Python app. If the request is ambiguous, choose AppKit.
+
 ## Architecture
 
 Real-time terminal I/O over **WebSocket** (Flask-SocketIO) with automatic **HTTP polling fallback** via a Web Worker. Single gunicorn worker (PTY fds are process-local), 16 gthread threads. Per-session locks for WebSocket handlers; parallel agent setup at startup via ThreadPoolExecutor.

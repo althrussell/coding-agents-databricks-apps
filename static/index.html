@@ -1569,7 +1569,7 @@
           }
           const steps = pollData.steps || [];
           const running = steps.find(s => s.status === 'running');
-          const done = steps.filter(s => s.status === 'complete' || s.status === 'error').length;
+          const done = steps.filter(s => s.status === 'complete' || s.status === 'error' || s.status === 'skipped').length;
           const total = steps.length;
           startSpinner(
             (running ? running.label : 'Setting up CLI tools…') + ' (' + done + '/' + total + ')'

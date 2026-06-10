@@ -27,9 +27,10 @@ mkdir -p /work
 cd /repo && cp -a --no-preserve=ownership \
     requirements.txt pyproject.toml app.py utils.py app_state.py \
     pat_rotator.py telemetry.py cli_auth.py enterprise_config.py \
-    install_micro.sh install_gh.sh install_databricks_cli.sh \
+    install_micro.sh install_gh.sh install_databricks_cli.sh install_node.sh \
     setup_proxy.py setup_claude.py setup_codex.py setup_gemini.py \
     setup_opencode.py setup_hermes.py setup_databricks.py setup_mlflow.py \
+    setup_appkit.py \
     content_filter_proxy.py CLAUDE.md \
     /work/ 2>/dev/null || true
 # Also need the tests dir for verify.sh
@@ -93,6 +94,11 @@ echo ">>> Stage 3b: install_gh.sh"
 bash install_gh.sh || echo "(install_gh.sh failed)"
 echo ">>> Stage 3b: install_databricks_cli.sh"
 bash install_databricks_cli.sh || echo "(install_databricks_cli.sh failed)"
+echo ">>> Stage 3b: install_node.sh (Node v22+ for AppKit)"
+# The apps-like image ships Ubuntu 22.04's apt node (v12), so this exercises
+# the real upgrade-to-22 path. Refresh PATH so the new ~/.local/bin/node wins.
+bash install_node.sh || echo "(install_node.sh failed)"
+hash -r 2>/dev/null || true
 echo
 
 echo ">>> Stage 3b: setup_claude.py"
@@ -109,6 +115,9 @@ uv run python setup_opencode.py || echo "(setup_opencode.py exited non-zero)"
 
 echo ">>> Stage 3f: setup_hermes.py"
 uv run python setup_hermes.py || echo "(setup_hermes.py exited non-zero)"
+
+echo ">>> Stage 3g: setup_appkit.py (pin AppKit version + warm npm cache)"
+uv run python setup_appkit.py || echo "(setup_appkit.py exited non-zero)"
 
 echo
 

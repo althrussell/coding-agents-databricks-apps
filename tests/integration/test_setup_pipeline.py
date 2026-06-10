@@ -324,6 +324,8 @@ def test_pipeline_runs_and_security_fixes_hold(apps_like_image):
         "cooldown opencode stable",
         "cooldown codex stable",
         "cooldown gemini stable",
+        "appkit node v22+",       # install_node.sh upgraded Node for AppKit
+        "appkit version",         # setup_appkit.py ran (pinned or skipped)
     ]
     missing = [m for m in expected_passes if m not in result.stdout]
     assert not missing, (

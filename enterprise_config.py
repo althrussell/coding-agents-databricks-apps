@@ -38,6 +38,12 @@ Env-var contract:
   NPM_TOKEN                      Bearer token for NPM_REGISTRY. Written as
                                  `//host/:_authToken=...`.
 
+  NODE_DIST_MIRROR               Replacement for https://nodejs.org/dist, the
+                                 Node.js binary tarball host used by
+                                 install_node.sh to upgrade to Node 22 LTS for
+                                 AppKit. Mirror keeps the same
+                                 /v{ver}/node-v{ver}-linux-x64.tar.xz tail.
+
   GITHUB_API_BASE                Replacement for https://api.github.com.
   GITHUB_RELEASE_MIRROR          Replacement for https://github.com (release
                                  download paths). Convention: mirror keeps the
@@ -97,6 +103,7 @@ _BANNER_VARS = (
     "UV_HTTP_TIMEOUT",
     "NPM_REGISTRY",
     "NPM_TOKEN",
+    "NODE_DIST_MIRROR",
     "GITHUB_API_BASE",
     "GITHUB_RELEASE_MIRROR",
     "CLAUDE_INSTALLER_URL",

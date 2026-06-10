@@ -1,6 +1,13 @@
 # Supported Frameworks
 
-All frameworks below are **pre-installed** in the Databricks Apps runtime. Claude already knows how to use them — this guide covers only **Databricks-specific** patterns. For full examples and recipes, see the **[Databricks Apps Cookbook](https://apps-cookbook.dev/)**.
+> **Read this first.** The default for any new app is **AppKit + Lakebase**
+> (React + Vite + TypeScript) — see [SKILL.md → AppKit + Lakebase](SKILL.md#appkit--lakebase--the-default-for-new-apps)
+> and [7-appkit-ux.md](7-appkit-ux.md). The Python frameworks documented below
+> are **opt-in only** — use them when the user explicitly names a Python
+> framework, explicitly wants Python, or you are extending an existing Python
+> app. Never silently default to Streamlit.
+
+The Python frameworks below are **pre-installed** in the Databricks Apps runtime. Claude already knows how to use them — this guide covers only **Databricks-specific** patterns. For full examples and recipes, see the **[Databricks Apps Cookbook](https://apps-cookbook.dev/)**.
 
 ---
 
@@ -39,6 +46,8 @@ app = dash.Dash(
 ---
 
 ## Streamlit
+
+**Opt-in only** — never the default. Use AppKit + Lakebase unless the user explicitly asks for Streamlit.
 
 **Best for**: Rapid prototyping, data science apps, internal tools, notebook-to-app workflow.
 

@@ -107,12 +107,14 @@ setup_state = {
         {"id": "micro",      "label": "Installing micro editor",      "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "gh",         "label": "Installing GitHub CLI",        "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "dbcli",     "label": "Upgrading Databricks CLI",     "status": "pending", "started_at": None, "completed_at": None, "error": None},
+        {"id": "node",       "label": "Ensuring Node.js v22+ (AppKit)", "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "proxy",   "label": "Starting content-filter proxy", "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "claude",     "label": "Configuring Claude CLI",       "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "codex",      "label": "Configuring Codex CLI",        "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "opencode",   "label": "Configuring OpenCode CLI",     "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "gemini",     "label": "Configuring Gemini CLI",       "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "hermes",     "label": "Configuring Hermes Agent",     "status": "pending", "started_at": None, "completed_at": None, "error": None},
+        {"id": "appkit",     "label": "Pinning AppKit + warming cache", "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "databricks", "label": "Setting up Databricks CLI",    "status": "pending", "started_at": None, "completed_at": None, "error": None},
         {"id": "mlflow",     "label": "Enabling MLflow tracing",       "status": "pending", "started_at": None, "completed_at": None, "error": None},
     ]
@@ -130,6 +132,68 @@ def _update_step(step_id, **kwargs):
 def _get_setup_state_snapshot():
     with setup_lock:
         return copy.deepcopy(setup_state)
+
+
+# --- Agent enablement / lean lab profile -----------------------------------
+#
+# Toggleable agents can be turned off to shrink the boot footprint for labs.
+# Claude (the primary agent), AppKit, the Databricks CLI, git/editor, and
+# MLflow are core and always run. Each toggleable agent maps to an
+# ENABLE_<AGENT> env var; CODA_PROFILE provides presets.
+_TOGGLEABLE_AGENTS = {
+    "codex": "ENABLE_CODEX",
+    "opencode": "ENABLE_OPENCODE",
+    "gemini": "ENABLE_GEMINI",
+    "hermes": "ENABLE_HERMES",
+}
+
+
+def _env_truthy(value):
+    return bool(value) and value.strip().lower() in ("true", "1", "yes", "on")
+
+
+def _coda_profile(env=None):
+    env = env if env is not None else os.environ
+    return env.get("CODA_PROFILE", "").strip().lower()
+
+
+def _agent_enabled(agent, env=None):
+    """Whether a toggleable agent should be set up.
+
+    Resolution order:
+      1. Explicit ``ENABLE_<AGENT>`` env var (true/false) — always wins.
+      2. ``CODA_PROFILE`` preset default: ``lab`` disables all toggleable
+         agents (lean footprint = Claude + AppKit + Databricks core only); any
+         other value (incl. unset / ``full``) enables them.
+
+    Core steps not in ``_TOGGLEABLE_AGENTS`` are always enabled.
+    """
+    env = env if env is not None else os.environ
+    flag = _TOGGLEABLE_AGENTS.get(agent)
+    if flag is None:
+        return True
+    raw = env.get(flag)
+    if raw is not None and raw.strip() != "":
+        return _env_truthy(raw)
+    return _coda_profile(env) != "lab"
+
+
+def _enabled_setup_steps(env=None):
+    """Return the (step_id, command) parallel-setup catalog filtered by toggles.
+
+    Claude / AppKit / Databricks are always present; the rest are included only
+    when ``_agent_enabled`` says so for the given environment.
+    """
+    catalog = [
+        ("claude",     ["uv", "run", "python", "setup_claude.py"]),
+        ("codex",      ["uv", "run", "python", "setup_codex.py"]),
+        ("opencode",   ["uv", "run", "python", "setup_opencode.py"]),
+        ("gemini",     ["uv", "run", "python", "setup_gemini.py"]),
+        ("hermes",     ["uv", "run", "python", "setup_hermes.py"]),
+        ("appkit",     ["uv", "run", "python", "setup_appkit.py"]),
+        ("databricks", ["uv", "run", "python", "setup_databricks.py"]),
+    ]
+    return [(sid, cmd) for sid, cmd in catalog if _agent_enabled(sid, env)]
 
 
 # Single-user security: only the token owner can access the terminal
@@ -292,24 +356,50 @@ def _setup_git_config():
 
 
 def _reinit_app_git():
-    """On Databricks Apps, reinit git to remove template origin remote."""
+    """On Databricks Apps, reinit git to remove template origin remote.
+
+    Safe under Control Tower's ``repos.create`` deploy source: the app
+    container's ``/app/python/source_code`` is an ephemeral COPY of the
+    workspace source, so reinitializing git here cannot affect the workspace
+    Git folder, its repo link, or workspace sync (the post-commit hook only
+    syncs repos under ``~/projects``, never the app source). Any failure here
+    is non-fatal — we log and continue rather than erroring the git step.
+    """
     app_dir = os.path.dirname(os.path.abspath(__file__))
     if app_dir != "/app/python/source_code":
         return  # Local dev — leave git intact
 
-    git_dir = os.path.join(app_dir, ".git")
-    if not os.path.isdir(git_dir):
-        return  # Already clean
+    git_path = os.path.join(app_dir, ".git")
+    if not os.path.exists(git_path) and not os.path.islink(git_path):
+        return  # Already clean (no template origin to remove)
 
     import shutil
-    shutil.rmtree(git_dir)
-    subprocess.run(["git", "init"], cwd=app_dir, capture_output=True)
-    subprocess.run(["git", "add", "."], cwd=app_dir, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "Initial commit from coding-agents template"],
-        cwd=app_dir, capture_output=True,
-    )
-    logger.info("Reinitialized app source git (template origin removed)")
+
+    try:
+        # `.git` is normally a directory, but a Databricks Git folder or a
+        # worktree/submodule checkout can surface it as a file or symlink.
+        # Handle all three so an unexpected shape never raises mid-setup.
+        if os.path.islink(git_path) or os.path.isfile(git_path):
+            os.unlink(git_path)
+        else:
+            shutil.rmtree(git_path)
+    except Exception as e:
+        # Could not remove the existing git metadata — leave the source as-is.
+        # The template origin staying put is harmless in the isolated app
+        # container, and is strictly better than aborting git setup.
+        logger.warning(f"Skipping app git reinit (could not clear .git): {e}")
+        return
+
+    try:
+        subprocess.run(["git", "init"], cwd=app_dir, capture_output=True, timeout=30)
+        subprocess.run(["git", "add", "."], cwd=app_dir, capture_output=True, timeout=60)
+        subprocess.run(
+            ["git", "commit", "-m", "Initial commit from coding-agents template"],
+            cwd=app_dir, capture_output=True, timeout=60,
+        )
+        logger.info("Reinitialized app source git (template origin removed)")
+    except Exception as e:
+        logger.warning(f"App git reinit incomplete (template origin removed): {e}")
 
 
 def _configure_all_cli_auth(token):
@@ -368,10 +458,21 @@ def _configure_all_cli_auth(token):
     pat_rotator._write_databrickscfg(token)
     logger.info("Databricks CLI auth configured: ~/.databrickscfg")
 
-    # 3. Re-run Codex, OpenCode, Gemini setup scripts with token in env
-    #    They are idempotent: detect CLI already installed, just write config files
+    # 3. Re-run enabled Codex, OpenCode, Gemini, Hermes setup scripts with the
+    #    token in env. They are idempotent: detect CLI already installed, just
+    #    write config files. Disabled agents (toggle / lab profile) are skipped
+    #    so a lean deployment doesn't re-run setup for agents it never installed.
     env = {**os.environ, "DATABRICKS_TOKEN": token}
-    for script in ["setup_codex.py", "setup_opencode.py", "setup_gemini.py", "setup_hermes.py"]:
+    _rerun_scripts = {
+        "codex": "setup_codex.py",
+        "opencode": "setup_opencode.py",
+        "gemini": "setup_gemini.py",
+        "hermes": "setup_hermes.py",
+    }
+    for _agent, script in _rerun_scripts.items():
+        if not _agent_enabled(_agent):
+            logger.info(f"Skipping CLI re-config for disabled agent '{_agent}'")
+            continue
         try:
             result = subprocess.run(
                 ["uv", "run", "python", script],
@@ -417,20 +518,31 @@ def run_setup():
     # --- Upgrade Databricks CLI (runtime image ships an older version) ---
     _run_step("dbcli", ["bash", "install_databricks_cli.sh"])
 
-    # --- Content-filter proxy (must be running before OpenCode starts) ---
-    # Sanitizes requests/responses between OpenCode and Databricks
-    # (see OpenCode #5028, docs/plans/2026-03-11-litellm-empty-content-blocks-design.md)
-    _run_step("proxy", ["uv", "run", "python", "setup_proxy.py"])
+    # --- Ensure Node v22+ for AppKit scaffolding (runtime image may ship older) ---
+    # Idempotent: no-op when the present Node already satisfies the minimum.
+    # Runs before the parallel agent setup so the npm-based CLIs (codex,
+    # opencode, gemini) install against the upgraded Node/npm when one was needed.
+    _run_step("node", ["bash", "install_node.sh"])
 
-    # --- Parallel agent setup (all independent of each other) ---
-    parallel_steps = [
-        ("claude",     ["uv", "run", "python", "setup_claude.py"]),
-        ("codex",      ["uv", "run", "python", "setup_codex.py"]),
-        ("opencode",   ["uv", "run", "python", "setup_opencode.py"]),
-        ("gemini",     ["uv", "run", "python", "setup_gemini.py"]),
-        ("hermes",     ["uv", "run", "python", "setup_hermes.py"]),
-        ("databricks", ["uv", "run", "python", "setup_databricks.py"]),
-    ]
+    # --- Mark disabled (toggled-off / lab-profile) agents as skipped up front ---
+    # so the setup UI shows them as intentionally skipped rather than stuck
+    # pending.
+    for _agent in _TOGGLEABLE_AGENTS:
+        if not _agent_enabled(_agent):
+            _update_step(_agent, status="skipped", completed_at=time.time())
+            logger.info(f"Agent '{_agent}' disabled (toggle/profile) — skipping setup")
+
+    # --- Content-filter proxy (only OpenCode needs it) ---
+    # Sanitizes requests/responses between OpenCode and Databricks
+    # (see OpenCode #5028, docs/plans/2026-03-11-litellm-empty-content-blocks-design.md).
+    # Gated on OpenCode being enabled — no point starting the proxy otherwise.
+    if _agent_enabled("opencode"):
+        _run_step("proxy", ["uv", "run", "python", "setup_proxy.py"])
+    else:
+        _update_step("proxy", status="skipped", completed_at=time.time())
+
+    # --- Parallel agent setup (enabled steps only) ---
+    parallel_steps = _enabled_setup_steps()
 
     with ThreadPoolExecutor(max_workers=len(parallel_steps)) as executor:
         futures = [
@@ -523,16 +635,21 @@ def _additional_authorized_emails():
     app is deployed by a service principal (e.g. an automated workshop/lab
     provisioner), the creator is the SP — whose identity is not a usable human
     login — so no attendee could ever pass the check. Set
-    ``CONTROL_TOWER_AUTHORIZED_EMAILS`` (or ``AUTHORIZED_EMAILS``) to a
-    comma-separated list of emails (attendee + operators) to authorize them
-    explicitly. Empty by default, so standard single-user deployments are
-    unchanged.
+    ``CONTROL_TOWER_AUTHORIZED_EMAILS`` (or ``AUTHORIZED_EMAILS``, or the
+    singular ``DATABRICKS_APP_AUTHORIZED_EMAIL``) to a comma-separated list of
+    emails (attendee + operators) to authorize them explicitly. Empty by
+    default, so standard single-user deployments are unchanged.
     """
     raw = (
         os.environ.get("CONTROL_TOWER_AUTHORIZED_EMAILS", "")
         or os.environ.get("AUTHORIZED_EMAILS", "")
     )
-    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+    emails = {e.strip().lower() for e in raw.split(",") if e.strip()}
+    # Fold in the singular Control-Tower-style var if set (one attendee email).
+    single = os.environ.get("DATABRICKS_APP_AUTHORIZED_EMAIL", "").strip().lower()
+    if single:
+        emails.add(single)
+    return emails
 
 
 def _is_allowlisted(current_user):
@@ -540,37 +657,82 @@ def _is_allowlisted(current_user):
     return bool(current_user) and current_user in _additional_authorized_emails()
 
 
-def check_authorization():
-    """Check if the current user is authorized to access the app.
+_VALID_AUTH_MODES = ("owner", "allowlist", "workspace")
 
-    Fails CLOSED on Databricks Apps: if we can't determine the owner,
-    deny all access rather than allowing unauthenticated terminal access.
-    Fails open only for local development.
-    Fixes: https://github.com/datasciencemonkey/coding-agents-databricks-apps/issues/57
+
+def _coda_auth_mode():
+    """Resolve the active authorization mode from ``CODA_AUTH_MODE``.
+
+    Modes:
+      - ``owner`` (default): single-user. Authorized iff the request identity
+        is the resolved app owner OR in the explicit allowlist. Fails CLOSED on
+        Databricks Apps when the owner can't be resolved. This is the original
+        CoDA behaviour.
+      - ``allowlist``: authorized iff the request identity is in the explicit
+        allowlist (owner is also allowed when resolved). Owner resolution is
+        NOT required — works for SP-deployed apps with a known attendee set.
+      - ``workspace``: any authenticated workspace user is authorized (the
+        request must carry a verified identity header). Isolation is handled by
+        provisioning one app instance per attendee in their own workspace, so
+        Control Tower no longer needs to patch the app source / allowlist.
+
+    Unknown / unset values fall back to ``owner``.
     """
-    current_user = get_request_user()
+    mode = os.environ.get("CODA_AUTH_MODE", "").strip().lower()
+    return mode if mode in _VALID_AUTH_MODES else "owner"
 
-    # Explicit allowlist wins — and works even when the owner couldn't be
-    # resolved (e.g. SP-deployed apps). Checked first so attendees/operators
-    # get in regardless of who created the app.
+
+def _user_is_authorized(current_user):
+    """Central authorization decision shared by HTTP, WebSocket, and configure-pat.
+
+    Returns ``(authorized: bool, denied_user: str | None)``. ``denied_user`` is
+    the identity to surface when denying — the request identity, or ``"unknown"``
+    when the identity (or, in owner mode, the owner) couldn't be resolved.
+
+    Fails OPEN only for local development (not Databricks Apps).
+    """
+    mode = _coda_auth_mode()
+
+    # Explicit allowlist always wins, in every mode, and works even when the
+    # owner couldn't be resolved (e.g. SP-deployed lab apps).
     if _is_allowlisted(current_user):
         return True, None
 
-    # Fail closed on Databricks Apps if owner couldn't be resolved
+    # Workspace mode: any authenticated workspace user is authorized.
+    if mode == "workspace":
+        if current_user:
+            return True, None
+        if _is_databricks_apps():
+            logger.warning("No user identity in request (workspace mode) — denying access")
+            return False, "unknown"
+        return True, None  # Local dev only
+
+    # Allowlist mode: owner resolution is not required; only the allowlist
+    # (checked above) plus the owner (if resolved) are authorized.
+    if mode == "allowlist":
+        if current_user and app_owner and current_user == app_owner:
+            return True, None
+        if not current_user:
+            if _is_databricks_apps():
+                logger.warning("No user identity in request (allowlist mode) — denying access")
+                return False, "unknown"
+            return True, None  # Local dev only
+        logger.warning(f"Unauthorized access attempt by {current_user} (allowlist mode)")
+        return False, current_user
+
+    # Owner mode (default): require owner resolution; fail closed otherwise.
     if not app_owner:
         if _is_databricks_apps():
             logger.error("SECURITY: app_owner not resolved — denying all access (fail-closed)")
             return False, "unknown"
         return True, None  # Local dev only
 
-    # If no user identity in request (local dev), allow access
     if not current_user:
         if _is_databricks_apps():
             logger.warning("No user identity in request on Databricks Apps — denying access")
             return False, "unknown"
-        return True, None
+        return True, None  # Local dev only
 
-    # Check if current user is the owner
     if current_user != app_owner:
         logger.warning(f"Unauthorized access attempt by {current_user} (owner: {app_owner})")
         return False, current_user
@@ -578,11 +740,22 @@ def check_authorization():
     return True, None
 
 
+def check_authorization():
+    """Check if the current user is authorized to access the app (HTTP).
+
+    Delegates to the central ``_user_is_authorized`` so HTTP, WebSocket, and
+    configure-pat share one decision under the active ``CODA_AUTH_MODE``.
+    Fails CLOSED on Databricks Apps; fails open only for local dev.
+    Fixes: https://github.com/datasciencemonkey/coding-agents-databricks-apps/issues/57
+    """
+    return _user_is_authorized(get_request_user())
+
+
 def _check_ws_authorization():
     """Check authorization for WebSocket connections — mirrors HTTP check_authorization().
 
-    Fails CLOSED on Databricks Apps: if app_owner is unresolved or no user identity
-    in headers, deny WebSocket access. Matches the HTTP handler's behavior exactly.
+    Reads the identity from the Socket.IO handshake headers and delegates to the
+    same central ``_user_is_authorized`` decision the HTTP path uses.
     """
     # Socket.IO passes HTTP headers from the initial handshake via request context
     raw_user = (
@@ -591,28 +764,8 @@ def _check_ws_authorization():
         or request.headers.get("X-Databricks-User-Email")
     )
     current_user = raw_user.lower() if raw_user else raw_user
-
-    # Explicit allowlist wins (mirrors check_authorization), even if the owner
-    # couldn't be resolved.
-    if _is_allowlisted(current_user):
-        return True
-
-    if not app_owner:
-        if _is_databricks_apps():
-            logger.error("SECURITY: app_owner not resolved — denying WebSocket (fail-closed)")
-            return False
-        return True  # Local dev only
-
-    if not current_user:
-        if _is_databricks_apps():
-            logger.warning("No user identity in WebSocket request on Databricks Apps — denying")
-            return False
-        return True  # Local dev only
-
-    if current_user != app_owner:
-        logger.warning(f"WebSocket unauthorized: {current_user} (owner: {app_owner})")
-        return False
-    return True
+    authorized, _ = _user_is_authorized(current_user)
+    return authorized
 
 
 # ── WebSocket Event Handlers ──────────────────────────────────────────────
@@ -1039,17 +1192,23 @@ def pat_status():
 @app.route("/api/configure-pat", methods=["POST"])
 def configure_pat():
     """Accept a user-provided PAT, validate it, and start rotation."""
-    # Hotfix: only the resolved owner may (re-)configure the PAT. Without this,
-    # any workspace-SSO'd user who reaches the app can submit their own valid
+    # Only an authorized identity may (re-)configure the PAT. Without this,
+    # any workspace-SSO'd user who reaches the app could submit their own valid
     # PAT and persistently impersonate the owner — every CLI call would then
-    # run under the submitter's identity. app_owner is set in initialize_app()
-    # before gunicorn binds, so it's reliably populated by request time on
-    # Databricks Apps; this guard short-circuits to "allow" only when owner
-    # resolution failed (matches the rest of the auth surface's behaviour).
+    # run under the submitter's identity. The authorization decision honours
+    # CODA_AUTH_MODE (owner / allowlist / workspace) via the shared
+    # _user_is_authorized helper, so e.g. in workspace mode any authenticated
+    # attendee on their own isolated app may bootstrap their PAT.
+    #
+    # The `and app_owner` guard preserves the bootstrap window: before the
+    # owner is resolved (first boot, no PAT yet), this short-circuits to "allow"
+    # so the very first configure-pat can bootstrap owner resolution — matching
+    # the rest of the auth surface's fail-open-until-resolved behaviour.
     if _is_databricks_apps() and app_owner:
         _req_user = get_request_user()
-        if _req_user != app_owner and not _is_allowlisted(_req_user):
-            logger.warning(f"Rejected configure-pat from non-owner {_req_user} (owner: {app_owner})")
+        _authorized, _ = _user_is_authorized(_req_user)
+        if not _authorized:
+            logger.warning(f"Rejected configure-pat from unauthorized {_req_user}")
             return jsonify({"error": "Forbidden"}), 403
 
     # Idempotency / defence-in-depth: bootstrap is single-shot. Once a PAT

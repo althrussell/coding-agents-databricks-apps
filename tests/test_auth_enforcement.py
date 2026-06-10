@@ -421,3 +421,174 @@ class TestAdditionalAuthorizedEmails:
                 assert authorized is False
         finally:
             app_module.app_owner = original_owner
+
+    def test_singular_authorized_email_var_folded_in(self):
+        """DATABRICKS_APP_AUTHORIZED_EMAIL (singular, Control-Tower style) must
+        be honoured alongside the comma-separated lists."""
+        app_module = _get_app_module()
+        original_owner = app_module.app_owner
+        try:
+            app_module.app_owner = "sp-client-id"
+            with mock.patch.dict(
+                "os.environ",
+                {"DATABRICKS_APP_AUTHORIZED_EMAIL": "attendee@databricks.com"},
+            ), mock.patch.object(app_module, "_is_databricks_apps", return_value=True), \
+                 app_module.app.test_request_context(
+                     headers={"X-Forwarded-Email": "Attendee@Databricks.com"}
+                 ):
+                authorized, _ = app_module.check_authorization()
+                assert authorized is True
+        finally:
+            app_module.app_owner = original_owner
+
+
+# ---------------------------------------------------------------------------
+# 4. CODA_AUTH_MODE matrix (owner | allowlist | workspace) across HTTP/WS/PAT
+# ---------------------------------------------------------------------------
+
+
+def _auth_ctx(app_module, mode, header_email, owner="owner@databricks.com",
+              allowlist=None, on_apps=True):
+    """Build a (env-patch, request-context) combo for an auth decision.
+
+    Returns a context manager stack the caller enters; inside it, app_owner is
+    set and _is_databricks_apps() is patched. CODA_AUTH_MODE and the allowlist
+    are injected via os.environ so the real _coda_auth_mode() reads them.
+    """
+    import contextlib
+
+    env = {"CODA_AUTH_MODE": mode}
+    if allowlist:
+        env["CONTROL_TOWER_AUTHORIZED_EMAILS"] = allowlist
+
+    @contextlib.contextmanager
+    def _cm():
+        original_owner = app_module.app_owner
+        app_module.app_owner = owner
+        try:
+            headers = {"X-Forwarded-Email": header_email} if header_email else {}
+            with mock.patch.dict("os.environ", env, clear=False), \
+                 mock.patch.object(app_module, "_is_databricks_apps", return_value=on_apps), \
+                 app_module.app.test_request_context(headers=headers):
+                yield
+        finally:
+            app_module.app_owner = original_owner
+
+    return _cm()
+
+
+class TestCodaAuthModeMatrix:
+    """Parametrized verification of CODA_AUTH_MODE across the HTTP and WS
+    decision surfaces, plus the configure-pat gate, using real request
+    contexts (not mocked-out helpers)."""
+
+    # (mode, header_email, owner, allowlist, expected_http_authorized)
+    CASES = [
+        # owner mode: only the owner (or allowlist) passes
+        ("owner", "owner@databricks.com", "owner@databricks.com", None, True),
+        ("owner", "intruder@evil.com", "owner@databricks.com", None, False),
+        ("owner", "att@databricks.com", "sp-client-id", "att@databricks.com", True),
+        # allowlist mode: only allowlist (owner allowed when resolved)
+        ("allowlist", "att@databricks.com", "sp-client-id", "att@databricks.com", True),
+        ("allowlist", "intruder@evil.com", "sp-client-id", "att@databricks.com", False),
+        ("allowlist", "owner@databricks.com", "owner@databricks.com", None, True),
+        # workspace mode: ANY authenticated user passes, owner irrelevant
+        ("workspace", "anyone@databricks.com", "sp-client-id", None, True),
+        ("workspace", "another@databricks.com", "owner@databricks.com", None, True),
+    ]
+
+    @pytest.mark.parametrize(
+        "mode,email,owner,allowlist,expected", CASES,
+        ids=[f"{c[0]}-{c[1].split('@')[0]}" for c in CASES],
+    )
+    def test_http_decision(self, mode, email, owner, allowlist, expected):
+        app_module = _get_app_module()
+        with _auth_ctx(app_module, mode, email, owner, allowlist):
+            authorized, _ = app_module.check_authorization()
+            assert authorized is expected, (
+                f"HTTP {mode} mode for {email} (owner={owner}, "
+                f"allowlist={allowlist}) expected {expected}"
+            )
+
+    @pytest.mark.parametrize(
+        "mode,email,owner,allowlist,expected", CASES,
+        ids=[f"{c[0]}-{c[1].split('@')[0]}" for c in CASES],
+    )
+    def test_ws_decision(self, mode, email, owner, allowlist, expected):
+        app_module = _get_app_module()
+        with _auth_ctx(app_module, mode, email, owner, allowlist):
+            assert app_module._check_ws_authorization() is expected
+
+    def test_workspace_mode_denies_missing_identity_on_apps(self):
+        """Workspace mode still fails closed when there's no verified identity."""
+        app_module = _get_app_module()
+        with _auth_ctx(app_module, "workspace", header_email=None,
+                       owner="sp-client-id"):
+            authorized, user = app_module.check_authorization()
+            assert authorized is False
+            assert user == "unknown"
+
+    def test_allowlist_mode_denies_missing_identity_on_apps(self):
+        app_module = _get_app_module()
+        with _auth_ctx(app_module, "allowlist", header_email=None,
+                       owner="sp-client-id", allowlist="att@databricks.com"):
+            authorized, user = app_module.check_authorization()
+            assert authorized is False
+
+    def test_unknown_mode_falls_back_to_owner(self):
+        """An unrecognised CODA_AUTH_MODE must behave like the safe 'owner' default."""
+        app_module = _get_app_module()
+        with _auth_ctx(app_module, "bogus-mode", "intruder@evil.com",
+                       owner="owner@databricks.com"):
+            authorized, _ = app_module.check_authorization()
+            assert authorized is False
+        with _auth_ctx(app_module, "bogus-mode", "owner@databricks.com",
+                       owner="owner@databricks.com"):
+            authorized, _ = app_module.check_authorization()
+            assert authorized is True
+
+    # ---- configure-pat gate honours the mode ----
+
+    def _configure_pat_status(self, app_module, mode, email, owner, allowlist=None):
+        env = {"CODA_AUTH_MODE": mode}
+        if allowlist:
+            env["CONTROL_TOWER_AUTHORIZED_EMAILS"] = allowlist
+        original_owner = app_module.app_owner
+        app_module.app_owner = owner
+        try:
+            client = _make_client(app_module)
+            with mock.patch.dict("os.environ", env, clear=False), \
+                 mock.patch.object(app_module, "_is_databricks_apps", return_value=True):
+                resp = client.post(
+                    "/api/configure-pat",
+                    json={},  # empty body → 400 if it passes the auth gate
+                    headers={"X-Forwarded-Email": email},
+                )
+            return resp.status_code
+        finally:
+            app_module.app_owner = original_owner
+
+    def test_configure_pat_owner_mode_denies_non_owner(self):
+        app_module = _get_app_module()
+        status = self._configure_pat_status(
+            app_module, "owner", "intruder@evil.com", "owner@databricks.com")
+        assert status == 403
+
+    def test_configure_pat_workspace_mode_allows_any_authenticated(self):
+        """In workspace mode, an attendee on their own isolated app may bootstrap
+        their PAT — the gate must NOT 403; empty body falls through to 400."""
+        app_module = _get_app_module()
+        status = self._configure_pat_status(
+            app_module, "workspace", "attendee@databricks.com", "sp-client-id")
+        assert status == 400
+
+    def test_configure_pat_allowlist_mode_gates_on_list(self):
+        app_module = _get_app_module()
+        allowed = self._configure_pat_status(
+            app_module, "allowlist", "att@databricks.com", "sp-client-id",
+            allowlist="att@databricks.com")
+        assert allowed == 400
+        denied = self._configure_pat_status(
+            app_module, "allowlist", "intruder@evil.com", "sp-client-id",
+            allowlist="att@databricks.com")
+        assert denied == 403

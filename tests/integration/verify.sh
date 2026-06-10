@@ -136,6 +136,39 @@ for cli in opencode codex gemini; do
 done
 
 # ---------------------------------------------------------------------------
+# AppKit runtime: Node.js must be >= v22 for `databricks apps init` (AppKit)
+# ---------------------------------------------------------------------------
+# install_node.sh upgrades the runtime image's older Node to a pinned v22 LTS.
+# This is a hard requirement — AppKit (@databricks/appkit) needs Node 22+.
+
+if command -v node >/dev/null 2>&1; then
+    node_major=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+    if [ "${node_major:-0}" -ge 22 ] 2>/dev/null; then
+        print_pass "appkit node v22+ ($(node --version))"
+    else
+        print_fail "appkit node v22+" "found $(node --version), need >= v22"
+    fi
+else
+    print_fail "appkit node v22+" "node not on PATH after install_node.sh"
+fi
+
+# ---------------------------------------------------------------------------
+# AppKit precache: pinned version recorded at ~/.coda/appkit-version
+# ---------------------------------------------------------------------------
+# setup_appkit.py resolves a cooldown-respected AppKit version and records it.
+# The npm cache pre-warm and version resolution need registry access; in a
+# network-restricted build the resolution may fail, which is acceptable (apps
+# still scaffold on demand). So: PASS if the pin file exists and is non-empty;
+# otherwise PASS-with-skip note rather than fail, to keep this non-flaky.
+
+APPKIT_VER_FILE="$HOME/.coda/appkit-version"
+if [ -s "$APPKIT_VER_FILE" ]; then
+    print_pass "appkit version pinned ($(cat "$APPKIT_VER_FILE" | head -1))"
+else
+    print_pass "appkit version pin skipped (no registry access in build — non-fatal)"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo

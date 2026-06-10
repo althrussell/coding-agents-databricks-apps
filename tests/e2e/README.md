@@ -56,6 +56,47 @@ uv run pytest tests/e2e/test_live_security.py -v
 Wall time: ~2 min per test (PAT mint + container setup + verify).
 LLM tokens per run: zero — Playwright drives the browser autonomously.
 
+## Lab workspace-mode tests (`test_lab_workspace_auth.py`)
+
+These verify the lab deploy contract: `CODA_AUTH_MODE=workspace` admits any
+authenticated workspace user (no per-attendee source patching), and
+`scripts/lab_deploy.py` deploys via the same SDK path Control Tower uses.
+
+### Non-owner admission proof
+
+Record a SECOND SSO session as a *different* workspace user than the app owner:
+
+```
+# point at the workspace-mode lab app, then record the attendee identity
+export CODA_LAB_PROFILE=<lab-profile>        # or CODA_LAB_APP_URL=<url>
+export CODA_LAB_APP_NAME=coda-lab            # optional, defaults to coda-lab
+make e2e-auth-nonowner
+```
+
+That saves `tests/e2e/auth_nonowner.json` (gitignored). Then:
+
+```
+# admission check (fast): non-owner must NOT hit the 403 auth wall
+uv run pytest tests/e2e/test_lab_workspace_auth.py::test_nonowner_reaches_app_in_workspace_mode -v
+
+# full attendee flow (PAT entry + bash session): opt in with CODA_E2E_FULL
+CODA_NONOWNER_PROFILE=<attendee-profile> CODA_E2E_FULL=1 \
+  uv run pytest tests/e2e/test_lab_workspace_auth.py::test_nonowner_pat_entry_starts_session -v
+```
+
+### Lab-deploy acceptance gate
+
+Runs `scripts/lab_deploy.py` against a REAL lab workspace and asserts the app
+goes ACTIVE. Provisions real infrastructure, so it's opt-in:
+
+```
+CODA_RUN_LAB_DEPLOY=1 CODA_LAB_PROFILE=<lab-profile> CODA_LAB_APP_NAME=coda-lab \
+  uv run pytest tests/e2e/test_lab_workspace_auth.py::test_lab_deploy_acceptance -v -s
+```
+
+All of these skip cleanly when their inputs (auth state, profiles, opt-in
+flags) are absent, so they're safe to leave in the default suite.
+
 ## Re-recording auth
 
 Auth cookies expire (Databricks' default is hours, sometimes days). When

@@ -22,7 +22,7 @@ APP_NAME      ?= coding-agents
 USER_EMAIL    = $(shell databricks current-user me --profile $(PROFILE) --output json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('userName',''))")
 WORKSPACE_PATH = /Workspace/Users/$(USER_EMAIL)/apps/$(APP_NAME)
 
-.PHONY: help test integration-test e2e-test e2e-auth deploy redeploy create-app create-pat sync deploy-app status open clean enterprise-doctor
+.PHONY: help test integration-test e2e-test e2e-auth e2e-auth-nonowner deploy redeploy create-app create-pat sync deploy-app status open clean enterprise-doctor lab-deploy lab-verify
 
 # ── Help ─────────────────────────────────────────────
 
@@ -45,6 +45,21 @@ e2e-auth: ## Record SSO session for e2e tests (one-time per cookie expiry)
 	@echo ""
 	@echo "Auth state saved to tests/e2e/auth.json (gitignored)."
 	@echo "Run `make e2e-test PROFILE=$(PROFILE)` to execute the suite."
+
+e2e-auth-nonowner: ## Record a SECOND (attendee) SSO session for workspace-mode auth tests
+	@# Records a non-owner identity to tests/e2e/auth_nonowner.json. Log in as a
+	@# DIFFERENT workspace user than the app owner. Resolves the lab app URL via
+	@# CODA_LAB_APP_URL or (CODA_LAB_PROFILE + CODA_LAB_APP_NAME).
+	@url="$${CODA_LAB_APP_URL}"; \
+	if [ -z "$$url" ] && [ -n "$${CODA_LAB_PROFILE}" ]; then \
+		url=$$(databricks apps get $${CODA_LAB_APP_NAME:-coda-lab} --profile $${CODA_LAB_PROFILE} --output json 2>/dev/null \
+			| python3 -c "import sys,json; print(json.load(sys.stdin)['url'])"); \
+	fi; \
+	if [ -z "$$url" ]; then echo "Set CODA_LAB_APP_URL or CODA_LAB_PROFILE first."; exit 1; fi; \
+	echo "Recording NON-OWNER SSO session against $$url ..."; \
+	uv run playwright codegen --save-storage tests/e2e/auth_nonowner.json "$$url"
+	@echo ""
+	@echo "Attendee auth state saved to tests/e2e/auth_nonowner.json (gitignored)."
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -98,6 +113,17 @@ sync: ## Sync local files to Databricks workspace
 deploy-app: ## Deploy the app from workspace
 	@echo "==> Deploying app '$(APP_NAME)'..."
 	@databricks apps deploy $(APP_NAME) --source-code-path $(WORKSPACE_PATH) --profile $(PROFILE) --no-wait
+
+# ── Lab deploy (workspace-wide auth + lean profile) ──
+
+lab-deploy: ## Headless idempotent lab deploy (CODA_AUTH_MODE=workspace, CODA_PROFILE=lab)
+	@echo "==> Lab deploy of '$(APP_NAME)' via profile '$(PROFILE)'..."
+	@uv run python scripts/lab_deploy.py --profile $(PROFILE) --app-name $(APP_NAME)
+
+lab-verify: ## Verify a lab deploy: app exists and is ACTIVE
+	@echo "==> Verifying lab deploy of '$(APP_NAME)'..."
+	@databricks apps get $(APP_NAME) --profile $(PROFILE) --output json 2>/dev/null \
+		| python3 -c "import sys,json; a=json.load(sys.stdin); s=a.get('compute_status',{}).get('state',''); print('state=%s' % s); print('url=%s' % a.get('url','')); sys.exit(0 if s in ('ACTIVE','RUNNING') else 1)"
 
 # ── Monitoring ───────────────────────────────────────
 

@@ -40,11 +40,11 @@ class TestEnvironmentDetection:
     def test_runs_on_databricks_apps(self, tmp_path):
         """When app_dir == /app/python/source_code, reinit should execute."""
         app_mod = _import_app()
-        fake_git = tmp_path / ".git"
-        fake_git.mkdir()
 
         with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
-             mock.patch("os.path.isdir", return_value=True), \
+             mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.path.islink", return_value=False), \
+             mock.patch("os.path.isfile", return_value=False), \
              mock.patch("shutil.rmtree") as mock_rm, \
              mock.patch("subprocess.run") as mock_run:
             app_mod._reinit_app_git()
@@ -65,7 +65,8 @@ class TestIdempotency:
         app_mod = _import_app()
 
         with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
-             mock.patch("os.path.isdir", return_value=False), \
+             mock.patch("os.path.exists", return_value=False), \
+             mock.patch("os.path.islink", return_value=False), \
              mock.patch("shutil.rmtree") as mock_rm, \
              mock.patch("subprocess.run") as mock_run:
             app_mod._reinit_app_git()
@@ -86,7 +87,9 @@ class TestGitOperations:
         app_mod = _import_app()
 
         with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
-             mock.patch("os.path.isdir", return_value=True), \
+             mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.path.islink", return_value=False), \
+             mock.patch("os.path.isfile", return_value=False), \
              mock.patch("shutil.rmtree") as mock_rm, \
              mock.patch("subprocess.run"):
             app_mod._reinit_app_git()
@@ -98,14 +101,16 @@ class TestGitOperations:
         app_mod = _import_app()
 
         with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
-             mock.patch("os.path.isdir", return_value=True), \
+             mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.path.islink", return_value=False), \
+             mock.patch("os.path.isfile", return_value=False), \
              mock.patch("shutil.rmtree"), \
              mock.patch("subprocess.run") as mock_run:
             app_mod._reinit_app_git()
 
         calls = mock_run.call_args_list
         assert calls[0] == mock.call(
-            ["git", "init"], cwd="/app/python/source_code", capture_output=True
+            ["git", "init"], cwd="/app/python/source_code", capture_output=True, timeout=30
         )
 
     def test_runs_git_add_all(self):
@@ -113,14 +118,16 @@ class TestGitOperations:
         app_mod = _import_app()
 
         with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
-             mock.patch("os.path.isdir", return_value=True), \
+             mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.path.islink", return_value=False), \
+             mock.patch("os.path.isfile", return_value=False), \
              mock.patch("shutil.rmtree"), \
              mock.patch("subprocess.run") as mock_run:
             app_mod._reinit_app_git()
 
         calls = mock_run.call_args_list
         assert calls[1] == mock.call(
-            ["git", "add", "."], cwd="/app/python/source_code", capture_output=True
+            ["git", "add", "."], cwd="/app/python/source_code", capture_output=True, timeout=60
         )
 
     def test_runs_git_commit_with_template_message(self):
@@ -128,7 +135,9 @@ class TestGitOperations:
         app_mod = _import_app()
 
         with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
-             mock.patch("os.path.isdir", return_value=True), \
+             mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.path.islink", return_value=False), \
+             mock.patch("os.path.isfile", return_value=False), \
              mock.patch("shutil.rmtree"), \
              mock.patch("subprocess.run") as mock_run:
             app_mod._reinit_app_git()
@@ -136,8 +145,80 @@ class TestGitOperations:
         calls = mock_run.call_args_list
         assert calls[2] == mock.call(
             ["git", "commit", "-m", "Initial commit from coding-agents template"],
-            cwd="/app/python/source_code", capture_output=True,
+            cwd="/app/python/source_code", capture_output=True, timeout=60,
         )
+
+
+# ---------------------------------------------------------------------------
+# 3b. Control Tower repos.create deploy safety
+# ---------------------------------------------------------------------------
+
+class TestControlTowerDeploySafety:
+    """Under CT's repos.create source the deployed `.git` may be a file or a
+    symlink (worktree/submodule/Git-folder pointer), and removal may fail. The
+    reinit must handle all of these without raising — the app container is an
+    ephemeral copy so it can never harm the workspace repo link."""
+
+    def test_handles_git_as_file(self):
+        """A `.git` *file* (worktree pointer) is unlinked, not rmtree'd."""
+        app_mod = _import_app()
+
+        with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
+             mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.path.islink", return_value=False), \
+             mock.patch("os.path.isfile", return_value=True), \
+             mock.patch("shutil.rmtree") as mock_rm, \
+             mock.patch("os.unlink") as mock_unlink, \
+             mock.patch("subprocess.run") as mock_run:
+            app_mod._reinit_app_git()
+
+        mock_unlink.assert_called_once_with("/app/python/source_code/.git")
+        mock_rm.assert_not_called()
+        assert mock_run.call_count == 3  # still reinits a clean repo
+
+    def test_handles_git_as_symlink(self):
+        """A `.git` symlink is unlinked, not rmtree'd."""
+        app_mod = _import_app()
+
+        with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
+             mock.patch("os.path.exists", return_value=False), \
+             mock.patch("os.path.islink", return_value=True), \
+             mock.patch("os.path.isfile", return_value=False), \
+             mock.patch("shutil.rmtree") as mock_rm, \
+             mock.patch("os.unlink") as mock_unlink, \
+             mock.patch("subprocess.run"):
+            app_mod._reinit_app_git()
+
+        mock_unlink.assert_called_once_with("/app/python/source_code/.git")
+        mock_rm.assert_not_called()
+
+    def test_removal_failure_is_non_fatal(self):
+        """If clearing `.git` raises, the function must swallow it (no git ops)."""
+        app_mod = _import_app()
+
+        with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
+             mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.path.islink", return_value=False), \
+             mock.patch("os.path.isfile", return_value=False), \
+             mock.patch("shutil.rmtree", side_effect=PermissionError("locked")), \
+             mock.patch("subprocess.run") as mock_run:
+            # Must not raise.
+            app_mod._reinit_app_git()
+
+        mock_run.assert_not_called()  # bailed out cleanly after failed removal
+
+    def test_git_command_failure_is_non_fatal(self):
+        """If git init/commit raises, the function must swallow it."""
+        app_mod = _import_app()
+
+        with mock.patch("os.path.abspath", return_value="/app/python/source_code/app.py"), \
+             mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.path.islink", return_value=False), \
+             mock.patch("os.path.isfile", return_value=False), \
+             mock.patch("shutil.rmtree"), \
+             mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("git", 30)):
+            # Must not raise.
+            app_mod._reinit_app_git()
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +320,14 @@ class TestDocumentation:
         assert "reinitializes" in content or "reinit" in content, \
             "deployment.md should mention git reinit"
 
-    def test_readme_recommends_template(self):
+    def test_readme_documents_fork_and_deploy(self):
+        """README should explain this fork and how to deploy it (this is a
+        fork of upstream, not the upstream template — so it documents the
+        clone/deploy + lab workflow rather than the 'Use this template' flow)."""
         readme_path = os.path.join(os.path.dirname(__file__), "..", "README.md")
         with open(readme_path) as f:
             content = f.read()
-        assert "Use this template" in content, \
-            "README should recommend 'Use this template' workflow"
+        assert "About this fork" in content, \
+            "README should have an 'About this fork' section explaining why it exists"
+        assert "althrussell/coding-agents-databricks-apps" in content, \
+            "README should point at this fork's repo for clone/deploy"

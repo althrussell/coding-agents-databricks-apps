@@ -1,27 +1,45 @@
 ---
 name: databricks-apps-python
-description: "Builds Databricks applications. Prefers AppKit (TypeScript + React SDK) for new apps; falls back to Python frameworks (Dash, Streamlit, Gradio, Flask, FastAPI, Reflex) when Python is required. Handles OAuth authorization, app resources, SQL warehouse and Lakebase connectivity, model serving, foundation model APIs, and deployment. Use when building web apps, dashboards, ML demos, or REST APIs for Databricks, or when the user mentions AppKit, Streamlit, Dash, Gradio, Flask, FastAPI, Reflex, or Databricks app."
+description: "Builds Databricks applications. DEFAULT to AppKit (React + Vite + TypeScript + Lakebase) for every new app — it is the hard default, not a preference. Python frameworks (Dash, Streamlit, Gradio, Flask, FastAPI, Reflex) are opt-in ONLY when the user explicitly asks for Python or names a Python framework. Handles OAuth authorization, app resources, SQL warehouse and Lakebase connectivity, model serving, foundation model APIs, and deployment. Use when building web apps, dashboards, ML demos, or REST APIs for Databricks, or when the user mentions AppKit, Streamlit, Dash, Gradio, Flask, FastAPI, Reflex, or Databricks app."
 ---
 
 # Databricks Applications
 
-Build Python-based Databricks applications. For full examples and recipes, see the **[Databricks Apps Cookbook](https://apps-cookbook.dev/)**.
+Build Databricks applications. **The default for ANY new app is AppKit + Lakebase** (React + Vite + TypeScript frontend, Lakebase Postgres backend). Do not reach for Streamlit/Dash/Delta unless the user explicitly opts out of AppKit. For full examples and recipes, see the **[Databricks Apps Cookbook](https://apps-cookbook.dev/)**.
 
 ---
 
-## AppKit (Preferred for New Apps)
+## AppKit + Lakebase — the DEFAULT for new apps
 
-**[AppKit](https://github.com/databricks/appkit)** is the recommended SDK for new Databricks apps. It is a TypeScript + React SDK with a plugin architecture, built-in caching, telemetry, and end-to-end type safety.
+> **HARD DEFAULT (do not deviate without explicit user opt-out).** When a user
+> asks to "build an app", "make a dashboard", "create a tool", or anything
+> similar WITHOUT naming a framework, you MUST scaffold with **AppKit**
+> (React + Vite + TypeScript) and use **Lakebase** (Postgres) for app state —
+> NOT Streamlit, NOT Dash, NOT a Delta-table-backed Python app. Streamlit and
+> the other Python frameworks are opt-in only (see
+> [Python frameworks (opt-in only)](#python-frameworks-opt-in-only)).
 
-### Requirements
+**[AppKit](https://github.com/databricks/appkit)** is a Node.js + React SDK with a plugin architecture, built-in caching, telemetry, end-to-end type safety, and the `@databricks/appkit-ui` component library (shadcn/Radix primitives, `lucide-react` icons, charts, `DataTable`, `GenieChat`, `Sidebar`).
+
+### Why AppKit is the default
+- Modern full-stack UX out of the box (React + Vite + TypeScript), not a single-file script.
+- `@databricks/appkit-ui` ships a complete, Databricks-styled design system — every new app looks polished without the user prompting for design.
+- Lakebase (Postgres) is the right OLTP store for app state — far better UX than rendering a Delta table in Streamlit.
+- Plugin architecture (Analytics, Genie, Files, Lakebase) covers the common Databricks app needs.
+
+### Requirements (pre-checked at CoDA boot)
 - Node.js v22+
 - Databricks CLI v0.295.0+
+- A pinned, known-good AppKit version is recorded at `~/.coda/appkit-version` (see [appkit-precache](#pinned-appkit-version--offline-cache)).
 
-### Scaffold a new app
+### Golden-path scaffold (use this command)
 ```bash
+# Scaffold a React + Vite + TypeScript AppKit app with the Lakebase backend.
 databricks apps init
+# When prompted, choose the AppKit (React + TypeScript) template and enable
+# the Lakebase plugin. Then apply the CoDA UX defaults (see 7-appkit-ux.md).
 ```
-This interactive command scaffolds the full project, installs dependencies, and optionally deploys.
+This scaffolds the full project, installs dependencies, and optionally deploys. **Always read [7-appkit-ux.md](7-appkit-ux.md) immediately after scaffolding** and apply the CoDA UX defaults so the app ships with a branded shell, theming, and proper loading/empty/error states — without the user having to ask.
 
 ### Deploy
 ```bash
@@ -31,10 +49,10 @@ databricks apps deploy
 ### AppKit plugins
 | Plugin | Purpose |
 |--------|---------|
+| **Lakebase** | OLTP PostgreSQL via Lakebase with OAuth token management — DEFAULT app-state store |
 | **Analytics** | SQL queries against Databricks SQL Warehouses — file-based, typed, cached |
 | **Genie** | Conversational AI/BI interface with natural language queries |
 | **Files** | Browse/upload Unity Catalog Volumes |
-| **Lakebase** | OLTP PostgreSQL via Lakebase with OAuth token management |
 
 ### AI-assisted development
 ```bash
@@ -46,15 +64,23 @@ npx @databricks/appkit docs "your question here"
 ```
 
 ### AppKit documentation
+- **[7-appkit-ux.md](7-appkit-ux.md)** — CoDA UX defaults + golden-path overlay (READ THIS after scaffolding)
 - **[AppKit Docs](https://databricks.github.io/appkit/docs/)** — getting started, plugins, API reference
 - **[AI-assisted development](https://databricks.github.io/appkit/docs/development/ai-assisted-development)** — guidance for code assistants
 - **[llms.txt](https://databricks.github.io/appkit/llms.txt)** — machine-readable docs for AI context
 
 ---
 
-## Python Apps (alternative)
+## Python frameworks (opt-in only)
 
-Use Python when: the team is Python-only, you need Streamlit/Dash/Gradio/Gradio, or you are extending an existing Python app.
+> **Do NOT default to Streamlit or any Python framework.** Use a Python
+> framework ONLY when at least one of these is true:
+> - The user explicitly names Streamlit / Dash / Gradio / Flask / FastAPI / Reflex.
+> - The user explicitly says they want a Python app or cannot use Node/TypeScript.
+> - You are extending an existing Python app.
+>
+> Otherwise, use [AppKit + Lakebase](#appkit--lakebase--the-default-for-new-apps).
+> If the request is ambiguous, default to AppKit.
 
 ## Critical Rules for Python apps (always follow)
 
@@ -89,7 +115,7 @@ Copy this checklist and verify each item:
 | **FastAPI** | Async APIs, auto-generated OpenAPI docs | `["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]` |
 | **Reflex** | Full-stack Python apps without JavaScript | `["reflex", "run", "--env", "prod"]` |
 
-**Default**: Recommend **Streamlit** for prototypes, **Dash** for production dashboards, **FastAPI** for APIs, **Gradio** for ML demos.
+**Default**: There is no Python default — the default for any new app is [AppKit + Lakebase](#appkit--lakebase--the-default-for-new-apps). Only once the user has explicitly opted into Python: pick **Dash** for production dashboards, **FastAPI** for APIs, **Gradio** for ML demos, **Streamlit** for quick data-science prototypes.
 
 ---
 
@@ -108,6 +134,8 @@ Copy this checklist and verify each item:
 ---
 
 ## Detailed Guides
+
+**AppKit UX defaults**: Read [7-appkit-ux.md](7-appkit-ux.md) immediately after scaffolding any AppKit app — it defines the CoDA UX contract (branded app shell, theme provider + light/dark, mandatory loading/empty/error states, responsive layout + lucide icons) and the app-type→layout map the agent must apply with no prompting. (Keywords: AppKit, UX, app shell, theme, sidebar, layout, dashboard, CRUD, chat, form)
 
 **Authorization**: Use [1-authorization.md](1-authorization.md) when configuring app or user authorization — covers service principal auth, on-behalf-of user tokens, OAuth scopes, and per-framework code examples. (Keywords: OAuth, service principal, user auth, on-behalf-of, access token, scopes)
 
@@ -129,7 +157,7 @@ Copy this checklist and verify each item:
 
 1. Determine the task type:
 
-   **New app from scratch?** → Use [AppKit](#appkit-preferred-for-new-apps) (`databricks apps init`). Fall back to [Python Framework Selection](#python-framework-selection) only if Python is required.
+   **New app from scratch?** → Use [AppKit + Lakebase](#appkit--lakebase--the-default-for-new-apps) (`databricks apps init`), then apply [7-appkit-ux.md](7-appkit-ux.md). This is the default — only use [Python Framework Selection](#python-framework-selection) if the user explicitly opted into Python.
    **Setting up authorization?** → Read [1-authorization.md](1-authorization.md)
    **Connecting to data/resources?** → Read [2-app-resources.md](2-app-resources.md)
    **Using Lakebase (PostgreSQL)?** → Read [5-lakebase.md](5-lakebase.md)
