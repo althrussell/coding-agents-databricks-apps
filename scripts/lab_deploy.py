@@ -57,10 +57,27 @@ LAB_ENV_OVERRIDES: dict[str, str] = {
     "CODA_OBO_ENABLED": "true",
 }
 
-# Workspace-level scope grant required for OBO: the app may request the user's
-# token with these scopes. "all-apis" gives the coding agents the full Databricks
-# API breadth they need to build + deploy as the attendee.
+# Per-APP OBO scope declaration (App.user_api_scopes). "all-apis" gives the
+# coding agents the full Databricks API breadth they need to build + deploy as
+# the attendee. NOTE: this is the *app-side* vocabulary and is distinct from the
+# *workspace allowlist* value below.
 OBO_SCOPES: list[str] = ["all-apis"]
+
+# Workspace-level scope ALLOWLIST value (allowedAppsUserApiScopes.allowed_scopes).
+# This uses a different vocabulary than the app-side scopes: "*" means "any
+# scope". On live lab workspaces this is already effectively ["*"], so the patch
+# below is usually a no-op (we read-before-write and skip when it already covers).
+OBO_WORKSPACE_ALLOWED_SCOPES: list[str] = ["*"]
+
+# Setting identifiers as exposed on /api/2.1/settings/{name}. The REST resource
+# names are camelCase and do NOT match the snake_case SDK dataclass field names
+# (e.g. dataclass field ``allowed_apps_user_api_scopes`` ↔ REST name
+# ``allowedAppsUserApiScopes``). Passing the snake_case form as ``name`` 404s
+# (ResourceDoesNotExist). We pass camelCase AND resolve dynamically against
+# list_workspace_settings_metadata() so a rename on either side can't break us.
+OBO_ALLOWLIST_SETTING_CANDIDATES = ("allowedAppsUserApiScopes", "allowed_apps_user_api_scopes")
+OBO_USER_APPS_SETTING_CANDIDATES = ("enableOboUserApps", "enable_obo_user_apps")
+OBO_AGENTS_SETTING_CANDIDATES = ("agentsObo", "agents_obo")
 
 DEFAULT_GIT_URL = "https://github.com/althrussell/coding-agents-databricks-apps"
 
@@ -146,41 +163,156 @@ def ensure_repo(
             raise
 
 
-def ensure_obo_scopes(client: Any, *, scopes: list[str] | None = None) -> None:
-    """Headlessly grant the workspace-level OBO scope allowlist (idempotent).
+def _norm_setting(name: str) -> str:
+    """Normalise a setting name for case/underscore-insensitive comparison."""
+    return name.lower().replace("_", "")
 
-    Patches the ``allowed_apps_user_api_scopes`` public workspace setting so apps
-    in this workspace may request the user's token with ``scopes``. Requires
-    workspace-admin auth (Control Tower has it). Re-applying the same value is a
-    no-op on the API side.
+
+def resolve_setting_name(client: Any, *candidates: str) -> str:
+    """Return the workspace's ACTUAL setting name matching any candidate.
+
+    The REST resource name (camelCase, used in ``/api/2.1/settings/{name}``) does
+    not match the SDK dataclass field (snake_case). We list the workspace's
+    settings metadata and match case/underscore-insensitively so either spelling
+    resolves to the real name. Falls back to the first candidate if metadata is
+    unavailable (best-effort — a wrong guess just yields a clear 404 we handle).
+    """
+    wanted = {_norm_setting(c) for c in candidates}
+    try:
+        for meta in client.workspace_settings_v2.list_workspace_settings_metadata():
+            name = getattr(meta, "name", None)
+            if name and _norm_setting(name) in wanted:
+                return name
+    except Exception as exc:  # noqa: BLE001 — metadata unavailable / not permitted
+        print(f"note: could not list settings metadata ({exc}); using {candidates[0]!r}",
+              file=sys.stderr)
+    return candidates[0]
+
+
+def _allowlist_already_covers(setting: Any, scopes: list[str]) -> bool:
+    """True if the read allowlist already permits ``scopes`` (or is wildcard ``*``)."""
+    eff = (getattr(setting, "effective_allowed_apps_user_api_scopes", None)
+           or getattr(setting, "allowed_apps_user_api_scopes", None))
+    current = list(getattr(eff, "allowed_scopes", []) or [])
+    return "*" in current or set(scopes).issubset(set(current))
+
+
+def ensure_obo_scopes(client: Any, *, scopes: list[str] | None = None) -> None:
+    """Headlessly ensure the workspace OBO scope allowlist covers ``scopes``.
+
+    Resolves the real (camelCase) ``allowedAppsUserApiScopes`` setting name,
+    READS it first, and only PATCHES when the effective allowlist doesn't already
+    cover the requested scopes (live lab workspaces are typically already ``["*"]``,
+    so this is a no-op). Requires workspace-admin auth to patch. Idempotent.
     """
     from databricks.sdk.service.settingsv2 import (
         AllowedAppsUserApiScopesMessage,
         Setting,
     )
 
-    scopes = scopes if scopes is not None else OBO_SCOPES
+    scopes = scopes if scopes is not None else OBO_WORKSPACE_ALLOWED_SCOPES
+    name = resolve_setting_name(client, *OBO_ALLOWLIST_SETTING_CANDIDATES)
+
+    try:
+        current = client.workspace_settings_v2.get_public_workspace_setting(name=name)
+        if _allowlist_already_covers(current, scopes):
+            print(f"workspace OBO scope allowlist '{name}' already covers {scopes}; skipping patch")
+            return
+    except Exception as exc:  # noqa: BLE001 — not found / not readable: try the patch
+        print(f"note: could not read setting '{name}' ({exc}); attempting patch", file=sys.stderr)
+
     setting = Setting(
-        name="allowed_apps_user_api_scopes",
+        name=name,
         allowed_apps_user_api_scopes=AllowedAppsUserApiScopesMessage(allowed_scopes=scopes),
     )
-    with _timed(f"workspace_settings_v2.patch_public_workspace_setting(scopes={scopes})"):
-        client.workspace_settings_v2.patch_public_workspace_setting(
-            name="allowed_apps_user_api_scopes", setting=setting,
+    with _timed(f"patch_public_workspace_setting(name={name!r}, scopes={scopes})"):
+        client.workspace_settings_v2.patch_public_workspace_setting(name=name, setting=setting)
+    print(f"workspace OBO scope allowlist '{name}' set to {scopes}")
+
+
+def check_obo_gates(client: Any, *, enable_agents_obo: bool = True) -> dict[str, bool | None]:
+    """Read (and best-effort enable) the boolean OBO gates that actually decide
+    whether an app's AGENTS can use the forwarded user token.
+
+    Two gates matter beyond the scope allowlist:
+      - ``enableOboUserApps`` — general OBO-for-user-apps (usually already True).
+      - ``agentsObo``        — agent-specific OBO. **This is the real blocker** and
+        is often a one-time account/preview toggle ("On-Behalf-Of User
+        Authorization"). A workspace-level patch may not stick; we try, then warn
+        loudly so an operator can enable it once at the account/preview level.
+
+    Returns a dict of effective values (None when unreadable). Never raises.
+    """
+    from databricks.sdk.service.settingsv2 import Setting
+
+    report: dict[str, bool | None] = {}
+    gates = (
+        ("enableOboUserApps", OBO_USER_APPS_SETTING_CANDIDATES),
+        ("agentsObo", OBO_AGENTS_SETTING_CANDIDATES),
+    )
+    resolved: dict[str, str] = {}
+    for label, candidates in gates:
+        name = resolve_setting_name(client, *candidates)
+        resolved[label] = name
+        try:
+            s = client.workspace_settings_v2.get_public_workspace_setting(name=name)
+            val = getattr(s, "effective_boolean_val", None)
+            report[label] = val
+            print(f"OBO gate '{name}': effective={val}")
+        except Exception as exc:  # noqa: BLE001
+            report[label] = None
+            print(f"note: could not read OBO gate '{name}' ({exc})", file=sys.stderr)
+
+    if report.get("agentsObo") is False:
+        print(
+            "WARNING: OBO gate 'agentsObo' is DISABLED — apps' agents cannot use "
+            "the forwarded user token until it is enabled. This is typically a "
+            "ONE-TIME account/preview toggle ('On-Behalf-Of User Authorization'), "
+            "not a per-attendee step.",
+            file=sys.stderr,
         )
-    print(f"workspace OBO scopes allowed: {scopes}")
+        if enable_agents_obo:
+            name = resolved["agentsObo"]
+            try:
+                client.workspace_settings_v2.patch_public_workspace_setting(
+                    name=name, setting=Setting(name=name, boolean_val=True),
+                )
+                print(f"enabled OBO gate '{name}'=True (workspace-level)")
+                report["agentsObo"] = True
+            except Exception as exc:  # noqa: BLE001 — likely account/preview-scoped
+                print(
+                    f"WARNING: workspace-level enable of '{name}' failed ({exc}). "
+                    f"Enable it once at the account/preview level.",
+                    file=sys.stderr,
+                )
+    return report
+
+
+def provision_obo(client: Any) -> None:
+    """Best-effort headless OBO provisioning: scope allowlist + gate checks.
+
+    Each step is independently guarded so a non-admin / preview-gated environment
+    degrades to a clear warning rather than failing the whole deploy (agents then
+    fall back to the PAT prompt).
+    """
+    try:
+        ensure_obo_scopes(client)
+    except Exception as exc:  # noqa: BLE001 — non-admin / SDK shape
+        print(f"WARNING: could not ensure workspace OBO scopes ({exc}); continuing.",
+              file=sys.stderr)
+    check_obo_gates(client)
 
 
 def enable_obo_and_create_app(client: Any, app_name: str, **app_kwargs: Any) -> Any:
-    """Enable OBO at the workspace level and create the app declaring its scopes.
+    """Provision OBO at the workspace level and create the app declaring its scopes.
 
     Convenience entrypoint for callers (e.g. Control Tower) that want a single
-    call. Order matters: the workspace setting is patched BEFORE the app is
-    created so the app's declared ``user_api_scopes`` are within the allowlist.
+    call. Order matters: OBO is provisioned BEFORE the app is created so the app's
+    declared ``user_api_scopes`` are within the allowlist.
     """
     from databricks.sdk.service.apps import App
 
-    ensure_obo_scopes(client)
+    provision_obo(client)
     return client.apps.create(
         app=App(name=app_name, user_api_scopes=list(OBO_SCOPES), **app_kwargs)
     )
@@ -285,24 +417,18 @@ def deploy_lab_app(
     ``databricks sync``). Otherwise the repo is cloned to
     ``/Workspace/Users/<attendee>/<repo>`` first.
 
-    When ``enable_obo`` is set (default), the workspace OBO scope allowlist is
-    patched and the app declares ``user_api_scopes`` so agents can act as the
-    attendee. The scope patch is best-effort: it needs workspace-admin auth, so
-    a non-admin run logs a warning and continues (the deploy still succeeds; OBO
-    can be enabled separately, or attendees fall back to the PAT prompt).
+    When ``enable_obo`` is set (default), OBO is provisioned headlessly (scope
+    allowlist read-before-write + gate checks) and the app declares
+    ``user_api_scopes`` so agents can act as the attendee. Provisioning is
+    best-effort: it needs workspace-admin auth and the ``agentsObo`` gate may be
+    account/preview-scoped, so a non-admin / not-yet-enabled run logs warnings
+    and continues (the deploy still succeeds; attendees fall back to the PAT
+    prompt until OBO is fully enabled).
     """
     app_scopes: list[str] | None = None
     if enable_obo:
-        try:
-            ensure_obo_scopes(client)
-            app_scopes = list(OBO_SCOPES)
-        except Exception as exc:  # noqa: BLE001 — non-admin / SDK shape: warn, continue
-            print(
-                f"WARNING: could not enable workspace OBO scopes ({exc}). "
-                f"Deploy continues; enable OBO manually or attendees use the PAT "
-                f"fallback.",
-                file=sys.stderr,
-            )
+        app_scopes = list(OBO_SCOPES)
+        provision_obo(client)
 
     if source_path is None:
         repo_name = derive_repo_name(git_url)

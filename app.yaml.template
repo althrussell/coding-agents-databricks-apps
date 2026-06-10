@@ -47,8 +47,10 @@ env:
   #   Set "false" to fall back to the PAT flow (user pastes a token; PATRotator
   #   keeps it fresh — better for unattended/long-running work).
   #   HARD-GATED to lab mode: ignored entirely when CODA_PROFILE=full (always PAT).
-  #   Requires the workspace OBO scope allowlist (all-apis) + app user_api_scopes,
-  #   which scripts/lab_deploy.py provisions headlessly.
+  #   Requires, at the workspace/account level: the scope allowlist
+  #   (allowedAppsUserApiScopes, usually already "*") + app user_api_scopes
+  #   (all-apis) + the agentsObo gate enabled (often a one-time account/preview
+  #   toggle). scripts/lab_deploy.py provisions these headlessly (best-effort).
   - name: CODA_OBO_ENABLED
     value: "true"
   # Per-agent overrides. An explicit value here ALWAYS wins over CODA_PROFILE,
