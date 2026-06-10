@@ -26,6 +26,7 @@ the **full** profile differs, and the contract Control Tower relies on.
 | `CODA_PROFILE`       | `lab` (or unset)                           | `full` (must set explicitly)               |
 | Coding agents        | **Claude only** (others off)               | Claude, Codex, OpenCode, Gemini, Hermes    |
 | Guided lab coach     | on (clarify → recommend → confirm)         | always-on contract; coach block lab-only   |
+| Claude auto mode     | `bypassPermissions` (zero prompts)         | safe `default` (prompts)                    |
 | App builder          | AppKit (+ Lakebase on demand)              | AppKit (+ Lakebase on demand)              |
 | Content-filter proxy | off (no OpenCode)                          | on (OpenCode needs it)                     |
 | `CODA_AUTH_MODE`     | `workspace` (any authenticated user)       | `owner` (single user)                      |
@@ -141,6 +142,14 @@ succeed with almost no instructions:
 - **Persona check, once.** The coach asks whether the attendee is *technical* or
   *business* and adapts its language (outcomes vs. components). The answer is
   persisted to `~/.coda/persona`, so it is never asked again across sessions.
+- **Auto mode on (zero approval prompts).** The lab profile sets Claude's
+  `permissions.defaultMode` to `bypassPermissions`, so the build runs end to end
+  without the attendee approving each edit and command. This is safe here
+  because each attendee's CoDA app is an isolated, per-workspace container
+  scoped to their own identity (agents can only touch what that identity
+  allows). Override with `CODA_AUTO_MODE` (`false` to restore prompts, or an
+  explicit mode like `acceptEdits` / `auto`). The full build stays at Claude's
+  safe `default`.
 - **Guided, not rushed.** The coach clarifies what to build, leads with a
   recommendation, and confirms a short plan before scaffolding or deploying
   (see `instructions/lab_coach.md`, injected into Claude's memory at boot).

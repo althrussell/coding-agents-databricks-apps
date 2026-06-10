@@ -343,6 +343,7 @@
         <span id="font-size-display"></span>
         <button id="font-increase" title="Increase font size (Ctrl+=)">A+</button>
       </div>
+      <button id="readable-btn" title="Readable mode: larger text, roomy line spacing, high-contrast light theme">&#x1F441;&#xFE0F; Readable</button>
       <div class="separator"></div>
       <div class="tool-row">
         <button id="search-btn" title="Search (Ctrl+Shift+F)">&#x1F50D;</button>
@@ -552,8 +553,25 @@
     const MIN_FONT_SIZE = 8;
     const MAX_FONT_SIZE = 32;
     const DEFAULT_FONT_SIZE = 14;
+    // A touch roomier than xterm's default 1.0 — easier to read for everyone
+    // without changing the look much. The "Readable" preset / lab defaults
+    // push this higher.
+    const MIN_LINE_HEIGHT = 1.0;
+    const MAX_LINE_HEIGHT = 2.0;
+    const DEFAULT_LINE_HEIGHT = 1.2;
+    // minimumContrastRatio (xterm) auto-bumps dim ANSI colors toward WCAG-AA so
+    // faded greys/greens stay legible. 1 = disabled, 4.5 = AA. Applies to all.
+    const MIN_CONTRAST_RATIO = 4.5;
+
+    // Did the attendee explicitly pick their own value? (vs. an inherited
+    // default). Captured at load so lab readable defaults never override a
+    // deliberate choice. Must be read BEFORE any setter persists to storage.
+    const userSetFontSize = localStorage.getItem('terminal-font-size') !== null;
+    const userSetTheme = localStorage.getItem('terminal-theme-name') !== null;
+    const userSetLineHeight = localStorage.getItem('terminal-line-height') !== null;
 
     let currentFontSize = parseInt(localStorage.getItem('terminal-font-size')) || DEFAULT_FONT_SIZE;
+    let currentLineHeight = parseFloat(localStorage.getItem('terminal-line-height')) || DEFAULT_LINE_HEIGHT;
     let currentFontFamily = localStorage.getItem('terminal-font-family') || 'System Default';
     let currentThemeName = localStorage.getItem('terminal-theme-name') || null;
     let lastDarkTheme = localStorage.getItem('terminal-last-dark') || 'Dark';
@@ -645,6 +663,24 @@
       getAllPanes().forEach(p => { p.term.options.fontFamily = family; });
       refitAllPanes();
       document.getElementById('font-family-select').value = name;
+    }
+
+    // ── Line Height ────────────────────────────────────────────────
+    function setLineHeight(h) {
+      currentLineHeight = Math.max(MIN_LINE_HEIGHT, Math.min(MAX_LINE_HEIGHT, h));
+      localStorage.setItem('terminal-line-height', currentLineHeight);
+      getAllPanes().forEach(p => { p.term.options.lineHeight = currentLineHeight; });
+      refitAllPanes();
+    }
+
+    // ── Readable preset ────────────────────────────────────────────
+    // One click for non-technical attendees: larger text, roomy line spacing,
+    // and a clean high-contrast light theme. Beats fiddling with three
+    // separate dropdowns.
+    function applyReadablePreset() {
+      setFontSize(16);
+      setLineHeight(1.45);
+      applyTheme('Light');
     }
 
     // ── Refit all panes ─────────────────────────────────────────────
@@ -873,10 +909,21 @@
         ap.term.focus();
       }
     });
-    // Reveal the button in lab mode.
+    document.getElementById('readable-btn').addEventListener('click', applyReadablePreset);
+
+    // Reveal the Start-building button in lab mode, and apply readable lab
+    // defaults (bigger text, roomy spacing, high-contrast light theme) unless
+    // the attendee has already chosen their own. Updates the live globals so
+    // panes created before OR after this resolves both pick them up.
     fetch('/api/setup-status')
       .then(r => r.json())
-      .then(d => { if (d && d.lab_mode) startBuildingBtn.style.display = 'flex'; })
+      .then(d => {
+        if (!d || !d.lab_mode) return;
+        startBuildingBtn.style.display = 'flex';
+        if (!userSetFontSize) setFontSize(16);
+        if (!userSetLineHeight) setLineHeight(1.4);
+        if (!userSetTheme) applyTheme('Light');
+      })
       .catch(() => {});
     document.getElementById('dictation-send').addEventListener('click', sendDictation);
     document.getElementById('dictation-cancel').addEventListener('click', closeDictation);
@@ -1496,6 +1543,8 @@
         cursorBlink: true,
         fontSize: currentFontSize,
         fontFamily: fontFamilies[currentFontFamily] || 'monospace',
+        lineHeight: currentLineHeight,
+        minimumContrastRatio: MIN_CONTRAST_RATIO,
         theme: themes[currentThemeName].theme,
         scrollback: 10000,
         scrollOnUserInput: true

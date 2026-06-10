@@ -251,3 +251,35 @@ class TestLabAutolaunch:
         cmd = app_module._lab_autolaunch_command(tmp_path, env=env)
         assert cmd is not None
         assert cmd.startswith("claude ") and cmd.endswith("\n")
+
+
+# ---------------------------------------------------------------------------
+# 6. Auto permission mode ("auto mode on") resolution
+# ---------------------------------------------------------------------------
+
+
+class TestAutoPermissionMode:
+    def _resolve(self, env):
+        from utils import resolve_auto_permission_mode
+
+        return resolve_auto_permission_mode(env)
+
+    def test_lab_default_is_bypass(self):
+        assert self._resolve({}) == "bypassPermissions"
+        assert self._resolve({"CODA_PROFILE": "lab"}) == "bypassPermissions"
+
+    def test_full_default_is_off(self):
+        assert self._resolve({"CODA_PROFILE": "full"}) is None
+
+    def test_env_truthy_forces_bypass_even_in_full(self):
+        assert self._resolve({"CODA_PROFILE": "full", "CODA_AUTO_MODE": "true"}) == "bypassPermissions"
+
+    def test_env_falsey_disables_even_in_lab(self):
+        assert self._resolve({"CODA_PROFILE": "lab", "CODA_AUTO_MODE": "false"}) is None
+
+    def test_explicit_mode_names(self):
+        assert self._resolve({"CODA_AUTO_MODE": "acceptEdits"}) == "acceptEdits"
+        assert self._resolve({"CODA_AUTO_MODE": "auto"}) == "auto"
+        assert self._resolve({"CODA_AUTO_MODE": "bypass"}) == "bypassPermissions"
+        # "default" means "leave unset" (Claude's safe default).
+        assert self._resolve({"CODA_AUTO_MODE": "default", "CODA_PROFILE": "lab"}) is None

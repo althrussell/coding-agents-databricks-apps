@@ -203,6 +203,50 @@ def adapt_instructions_file(
     return True
 
 
+_PERMISSION_MODE_ALIASES = {
+    "default": "default",
+    "acceptedits": "acceptEdits",
+    "plan": "plan",
+    "auto": "auto",
+    "dontask": "dontAsk",
+    "bypasspermissions": "bypassPermissions",
+    "bypass": "bypassPermissions",
+}
+_AUTO_MODE_TRUTHY = {"true", "1", "yes", "on"}
+_AUTO_MODE_FALSEY = {"false", "0", "no", "off"}
+
+
+def resolve_auto_permission_mode(env) -> str | None:
+    """Resolve Claude Code's ``permissions.defaultMode`` ("auto mode") for CoDA.
+
+    Returns the mode string to write into ``~/.claude/settings.json`` (CLI scope,
+    which CoDA always uses), or ``None`` to leave it unset (Claude's safe
+    ``default``).
+
+    Resolution order:
+      1. ``CODA_AUTO_MODE`` env override — wins. Accepts:
+         - truthy (``true``/``1``/``yes``/``on``)  -> ``bypassPermissions``
+         - falsey (``false``/``0``/``no``/``off``) -> ``None`` (safe default)
+         - an explicit mode name (``acceptEdits``, ``auto``, ``plan``,
+           ``dontAsk``, ``bypassPermissions``/``bypass``, ``default``).
+      2. Otherwise follow the profile: the **lab** profile (incl. unset
+         ``CODA_PROFILE``) defaults to ``bypassPermissions`` so attendees get a
+         zero-prompt build in their isolated per-workspace app container; the
+         **full** build stays at Claude's safe ``default``.
+    """
+    raw = (env.get("CODA_AUTO_MODE") or "").strip().lower()
+    if raw in _AUTO_MODE_TRUTHY:
+        return "bypassPermissions"
+    if raw in _AUTO_MODE_FALSEY:
+        return None
+    if raw in _PERMISSION_MODE_ALIASES:
+        mode = _PERMISSION_MODE_ALIASES[raw]
+        return None if mode == "default" else mode
+    # Unset / unrecognized: follow the profile (lab is the default when unset).
+    profile = (env.get("CODA_PROFILE") or "").strip().lower() or "lab"
+    return "bypassPermissions" if profile == "lab" else None
+
+
 def _probe_gateway(url: str, timeout: float = 2.0) -> bool:
     """Quick connectivity check against an AI Gateway host.
 

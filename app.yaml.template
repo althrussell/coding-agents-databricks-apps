@@ -54,6 +54,14 @@ env:
   # on demand (and reused) only when a built app actually needs it.
   - name: LAKEBASE_INSTANCE_NAME
     value: "coda-lab"
+  # Claude "auto mode" — Claude's permissions.defaultMode. The lab profile
+  # defaults to bypassPermissions (zero approval prompts) so attendees get a
+  # smooth, hands-off build in their isolated per-workspace app container; the
+  # full build stays at Claude's safe default. Override here:
+  #   true / false        — force bypassPermissions on / off
+  #   acceptEdits | auto | plan | dontAsk | bypassPermissions — pick a mode
+  # - name: CODA_AUTO_MODE
+  #   value: "true"
   #OPTIONAL: Use the new Databricks AI Gateway if you have access (recommended), otherwise it will default to the older endpoint
   - name: DATABRICKS_GATEWAY_HOST
     value: https://<your-gateway-id>.ai-gateway.<env>.cloud.databricks.com

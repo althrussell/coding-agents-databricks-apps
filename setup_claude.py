@@ -4,7 +4,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from utils import discover_serving_endpoints, ensure_https, get_gateway_host, pick_in_geo_model
+from utils import (
+    discover_serving_endpoints,
+    ensure_https,
+    get_gateway_host,
+    pick_in_geo_model,
+    resolve_auto_permission_mode,
+)
 
 # Set HOME if not properly set
 if not os.environ.get("HOME") or os.environ["HOME"] == "/":
@@ -87,6 +93,30 @@ if token:
     print(f"Claude configured: {settings_path}")
 else:
     print("No DATABRICKS_TOKEN — skipping settings.json (will be configured after PAT setup)")
+
+# 1b. Default permission mode ("auto mode"). Token-independent: applies even
+# before PAT setup. Lab profile defaults to bypassPermissions so attendees get
+# a zero-prompt build in their isolated per-workspace app container; the full
+# build stays at Claude's safe default. Override with CODA_AUTO_MODE.
+auto_mode = resolve_auto_permission_mode(os.environ)
+if auto_mode:
+    settings_path = claude_dir / "settings.json"
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            settings = {}
+    else:
+        settings = {}
+    settings.setdefault("permissions", {})["defaultMode"] = auto_mode
+    if auto_mode == "bypassPermissions":
+        # Skip the one-time "are you sure?" prompt before entering bypass mode
+        # (honored from user-scope settings; ignored from project settings).
+        settings["skipDangerousModePermissionPrompt"] = True
+    settings_path.write_text(json.dumps(settings, indent=2))
+    print(f"Claude permission mode: defaultMode={auto_mode} ({settings_path})")
+else:
+    print("Claude permission mode: default (safe prompts) — auto mode off")
 
 # 2. Write ~/.claude.json with onboarding skip AND MCP servers
 # Honour DEEPWIKI_MCP_URL / EXA_MCP_URL from enterprise_config — operators in
