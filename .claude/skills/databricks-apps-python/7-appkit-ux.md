@@ -78,9 +78,13 @@ sidebar entries for each sub-area.
 
 ## 3. Data + backend defaults
 
-- **Lakebase (Postgres) is the default app-state store.** Use the AppKit
-  Lakebase plugin for reads/writes of app state (CRUD records, user prefs,
-  saved views). Do NOT persist app state in Delta tables for an interactive app.
+- **Lakebase (Postgres) is the default app-state store — when the app needs
+  persistence.** Apps with no saved state (read-only dashboards/viewers) skip
+  it. When you DO need CRUD records, user prefs, or saved views, provision it on
+  demand with `scripts/lakebase_ensure.py` (see [5-lakebase.md](5-lakebase.md))
+  and bind it via the AppKit Lakebase plugin. Do NOT persist app state in Delta
+  tables for an interactive app, and never make the user click resources in the
+  UI.
 - Use the **Analytics** plugin (SQL warehouse) for analytical/aggregate queries
   feeding dashboards.
 - All queries go through AppKit's typed, cached data layer — surface the
@@ -93,7 +97,8 @@ sidebar entries for each sub-area.
 ## 4. Golden-path checklist (copy and verify)
 
 ```
-- [ ] Scaffolded with `databricks apps init` (AppKit template), Lakebase plugin enabled
+- [ ] Decided whether the app needs persistence; if yes, ran scripts/lakebase_ensure.py and bound it non-interactively (no UI clicks)
+- [ ] Scaffolded with `databricks apps init --name <app> --auto-approve` (AppKit template; --features=lakebase only when persistence is needed)
 - [ ] Read pinned AppKit version from ~/.coda/appkit-version; confirmed appkit-ui exports via `npx @databricks/appkit docs`
 - [ ] Overlaid examples/appkit-ux/ (app-shell, theme-provider, data-view-states) and adapted
 - [ ] Branded app shell (Sidebar + header) wraps every page
@@ -104,4 +109,5 @@ sidebar entries for each sub-area.
 - [ ] lucide icons + theme tokens (no hardcoded colors)
 - [ ] App state in Lakebase (not Delta) for interactive CRUD
 - [ ] `databricks apps deploy` succeeds
+- [ ] Gave the user the LIVE app URL and a plain-language recap of what was built (outcome language for a business user)
 ```

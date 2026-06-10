@@ -32,14 +32,40 @@ Build Databricks applications. **The default for ANY new app is AppKit + Lakebas
 - Databricks CLI v0.295.0+
 - A pinned, known-good AppKit version is recorded at `~/.coda/appkit-version` (see [appkit-precache](#pinned-appkit-version--offline-cache)).
 
-### Golden-path scaffold (use this command)
+### Golden-path scaffold (zero prompts — never make the user click anything)
+
+**First decide whether the app needs persistence.** Many apps (read-only
+dashboards, viewers, simple tools) do NOT — those skip Lakebase entirely.
+
+**If the app does NOT need a database** (no CRUD, no saved state):
 ```bash
-# Scaffold a React + Vite + TypeScript AppKit app with the Lakebase backend.
-databricks apps init
-# When prompted, choose the AppKit (React + TypeScript) template and enable
-# the Lakebase plugin. Then apply the CoDA UX defaults (see 7-appkit-ux.md).
+# Scaffold the AppKit (React + Vite + TypeScript) template, no DB resource.
+databricks apps init --name <app> --auto-approve
 ```
-This scaffolds the full project, installs dependencies, and optionally deploys. **Always read [7-appkit-ux.md](7-appkit-ux.md) immediately after scaffolding** and apply the CoDA UX defaults so the app ships with a branded shell, theming, and proper loading/empty/error states — without the user having to ask.
+
+**If the app needs persistence** (CRUD records, user prefs, saved views), provision
+Lakebase on demand FIRST, then bind it non-interactively so `apps init` never
+hits the interactive "missing required resource Postgres" prompt:
+```bash
+# 1. Provision/reuse the lab's Lakebase instance (takes a few minutes the first
+#    time; reused instantly afterwards). Writes ~/.coda/lakebase.json.
+uv run python /app/python/source_code/scripts/lakebase_ensure.py
+
+# 2. Scaffold with the lakebase feature, binding the instance from step 1 via
+#    --set (non-interactive). With --auto-approve, an optional resource is only
+#    configured when its values are passed via --set — which is exactly what
+#    binds the DB without a prompt. The --set key is <plugin>.database.<field>;
+#    confirm the plugin/resource key for the template with
+#    `databricks apps init --help` (keys come from appkit.plugins.json).
+databricks apps init --name <app> --features=lakebase --auto-approve \
+  --set lakebase.database.instance_name=$(jq -r .name ~/.coda/lakebase.json) \
+  --set lakebase.database.database_name=$(jq -r .database_name ~/.coda/lakebase.json)
+```
+
+`lakebase_ensure.py` is idempotent — a second app in the same lab reuses the one
+instance. If it exits non-zero (e.g. the deploying identity lacks the
+database-create entitlement), tell the user and offer to proceed without
+persistence. This scaffolds the full project and installs dependencies. **Always read [7-appkit-ux.md](7-appkit-ux.md) immediately after scaffolding** and apply the CoDA UX defaults so the app ships with a branded shell, theming, and proper loading/empty/error states — without the user having to ask.
 
 ### Deploy
 ```bash

@@ -21,14 +21,15 @@ the **full** profile differs, and the contract Control Tower relies on.
 
 ## TL;DR
 
-| Concern              | Full build (default)                       | Lab build                                  |
+| Concern              | Lab build (DEFAULT)                        | Full build (opt-in)                        |
 | -------------------- | ------------------------------------------ | ------------------------------------------ |
-| `CODA_PROFILE`       | `full` (or unset)                          | `lab`                                      |
-| Coding agents        | Claude, Codex, OpenCode, Gemini, Hermes    | **Claude only** (others off)               |
-| App builder          | AppKit + Lakebase (default)                | AppKit + Lakebase (default)                |
-| Content-filter proxy | on (OpenCode needs it)                     | off (no OpenCode)                          |
-| `CODA_AUTH_MODE`     | `owner` (single user)                      | `workspace` (any authenticated user)       |
-| Set by               | `make deploy`                              | `scripts/lab_deploy.py` / `make lab-deploy`|
+| `CODA_PROFILE`       | `lab` (or unset)                           | `full` (must set explicitly)               |
+| Coding agents        | **Claude only** (others off)               | Claude, Codex, OpenCode, Gemini, Hermes    |
+| Guided lab coach     | on (clarify → recommend → confirm)         | always-on contract; coach block lab-only   |
+| App builder          | AppKit (+ Lakebase on demand)              | AppKit (+ Lakebase on demand)              |
+| Content-filter proxy | off (no OpenCode)                          | on (OpenCode needs it)                     |
+| `CODA_AUTH_MODE`     | `workspace` (any authenticated user)       | `owner` (single user)                      |
+| Set by               | `scripts/lab_deploy.py` / `make lab-deploy`| `make deploy` w/ `CODA_PROFILE=full` in app.yaml |
 
 ## Why a lean profile
 
@@ -38,8 +39,9 @@ multiplied by the attendee count. The lab profile keeps the boot path to the
 essentials an attendee actually needs in a guided lab — Claude Code plus the
 AppKit + Lakebase app-build path — and skips the rest.
 
-The full build stays the default for individual / dogfood use, where having
-every agent available matters more than boot time.
+**Lab is the default** (an unset `CODA_PROFILE` resolves to `lab`) because this
+fork is lab-first. The full build — every agent available — is opt-in for
+individual / dogfood use: set `CODA_PROFILE=full` explicitly.
 
 ## What the lab profile drops
 
@@ -78,7 +80,8 @@ run a lean lab that *also* keeps Gemini, for example:
 Resolution order (see `_agent_enabled` in `app.py`):
 
 1. Explicit `ENABLE_<AGENT>` (`true`/`false`) — always wins.
-2. Otherwise: `CODA_PROFILE=lab` ⇒ off; anything else (incl. unset / `full`) ⇒ on.
+2. Otherwise the effective profile decides: `lab` (the default, incl. unset) ⇒
+   off; `full` ⇒ on.
 
 ## Authorization: workspace mode kills source-patching
 
@@ -125,10 +128,69 @@ reinitializing git there cannot touch the workspace Git folder, its repo link,
 or workspace sync (the post-commit hook only syncs `~/projects/*`). The reinit
 is also fully defensive — any failure is logged and non-fatal.
 
+## Attendee experience (lab profile)
+
+The lab profile is tuned so a first-time, possibly non-technical attendee can
+succeed with almost no instructions:
+
+- **The agent speaks first.** On the first terminal session, CoDA auto-launches
+  Claude with a seeded opening, so the attendee is greeted and guided without
+  needing to know to type `claude`. Disable with `CODA_LAB_AUTOLAUNCH=false`. A
+  toolbar **"Start building"** button is the manual fallback (shown only in lab
+  mode).
+- **Persona check, once.** The coach asks whether the attendee is *technical* or
+  *business* and adapts its language (outcomes vs. components). The answer is
+  persisted to `~/.coda/persona`, so it is never asked again across sessions.
+- **Guided, not rushed.** The coach clarifies what to build, leads with a
+  recommendation, and confirms a short plan before scaffolding or deploying
+  (see `instructions/lab_coach.md`, injected into Claude's memory at boot).
+- **The payoff.** Every build ends with the live app URL and a plain-language
+  recap of what was built.
+- **Start over.** If an attendee gets stuck, "start over" cleanly sets the
+  current project aside and begins fresh (reusing the saved persona).
+
+These behaviors live in `instructions/lab_coach.md` and the always-on contract
+in `CLAUDE.md`; the auto-launch + fallback affordance live in `app.py` /
+`static/index.html`.
+
+## App persistence: on-demand Lakebase (no UI clicks)
+
+When the agent builds an app that needs persistence (CRUD records, user prefs,
+saved views), it provisions Lakebase **on demand** — never at boot, and never by
+making the attendee click resources in the Databricks UI:
+
+```bash
+# Idempotent: creates the lab's Lakebase instance the first time, reuses it after.
+uv run python scripts/lakebase_ensure.py
+```
+
+`scripts/lakebase_ensure.py`:
+
+- Resolves a **deterministic** instance name (`--name` ›
+  `LAKEBASE_INSTANCE_NAME` › `coda-lab`) so one lab reuses a single instance
+  across apps, and Control Tower can find + tear it down later.
+- Waits until the instance is `AVAILABLE`, then writes the binding to
+  `~/.coda/lakebase.json` and prints the exact non-interactive
+  `databricks apps init --resource …` flags. This is what avoids the interactive
+  "missing required resource Postgres" prompt that makes a naive
+  `apps init --features=lakebase` fail.
+- Applies any Control-Tower-injected `LAB_RESOURCE_TAGS` (`k=v,k2=v2`) as
+  `custom_tags` for cost attribution / teardown.
+
+Apps with no saved state (read-only dashboards/viewers) skip Lakebase entirely
+and incur no database cost.
+
+**Permissions note:** provisioning a Lakebase instance requires the deploying
+identity to have the database-create entitlement on the workspace. If it does
+not, `lakebase_ensure.py` exits non-zero with a clear message and the agent
+offers to build the app without persistence. For labs, grant the entitlement to
+the deploying service principal up front (Control Tower handles this at fleet
+setup).
+
 ## Deploying
 
 ```bash
-# Full build, single-user (owner) — your own workspace
+# Full build, single-user (owner) — set CODA_PROFILE=full explicitly
 make deploy PROFILE=<profile>
 
 # Lab build, workspace-wide auth — mirrors the Control Tower SDK path

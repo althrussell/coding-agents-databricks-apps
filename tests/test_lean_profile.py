@@ -33,10 +33,20 @@ class TestAgentEnabled:
         for agent in ("codex", "opencode", "gemini", "hermes"):
             assert app_module._agent_enabled(agent, env={"CODA_PROFILE": "full"}) is True
 
-    def test_unset_profile_enables_all_toggleable(self):
+    def test_unset_profile_defaults_to_lab_disables_toggleable(self):
+        # Lab-first: an unset CODA_PROFILE resolves to "lab", so toggleable
+        # agents are OFF by default (full is opt-in).
         app_module = _get_app_module()
         for agent in ("codex", "opencode", "gemini", "hermes"):
-            assert app_module._agent_enabled(agent, env={}) is True
+            assert app_module._agent_enabled(agent, env={}) is False
+
+    def test_resolved_profile_defaults_to_lab(self):
+        app_module = _get_app_module()
+        assert app_module._resolved_profile(env={}) == "lab"
+        assert app_module._resolved_profile(env={"CODA_PROFILE": ""}) == "lab"
+        assert app_module._resolved_profile(env={"CODA_PROFILE": "full"}) == "full"
+        assert app_module._lab_mode(env={}) is True
+        assert app_module._lab_mode(env={"CODA_PROFILE": "full"}) is False
 
     def test_lab_profile_disables_all_toggleable(self):
         app_module = _get_app_module()
@@ -167,3 +177,77 @@ class TestRunSetupLeanProfile:
 
         for agent in ("claude", "codex", "opencode", "gemini", "hermes", "appkit", "databricks", "proxy"):
             assert agent in executed, f"{agent} should run under full profile"
+
+
+# ---------------------------------------------------------------------------
+# 4. Lab coach injection (additive, idempotent, lab-only)
+# ---------------------------------------------------------------------------
+
+
+class TestInjectLabCoach:
+    def test_injects_into_claude_memory_in_lab_mode(self, tmp_path):
+        app_module = _get_app_module()
+        app_module._inject_lab_coach(env={"CODA_PROFILE": "lab"}, home_dir=tmp_path)
+        memory = tmp_path / ".claude" / "CLAUDE.md"
+        assert memory.exists()
+        assert app_module._LAB_COACH_MARKER in memory.read_text()
+
+    def test_idempotent_no_double_append(self, tmp_path):
+        app_module = _get_app_module()
+        for _ in range(3):
+            app_module._inject_lab_coach(env={"CODA_PROFILE": "lab"}, home_dir=tmp_path)
+        text = (tmp_path / ".claude" / "CLAUDE.md").read_text()
+        assert text.count(app_module._LAB_COACH_MARKER) == 1
+
+    def test_noop_in_full_mode(self, tmp_path):
+        app_module = _get_app_module()
+        app_module._inject_lab_coach(env={"CODA_PROFILE": "full"}, home_dir=tmp_path)
+        assert not (tmp_path / ".claude" / "CLAUDE.md").exists()
+
+    def test_appends_to_existing_memory_preserving_content(self, tmp_path):
+        app_module = _get_app_module()
+        memory = tmp_path / ".claude" / "CLAUDE.md"
+        memory.parent.mkdir(parents=True)
+        memory.write_text("# existing user memory\nkeep me\n")
+        app_module._inject_lab_coach(env={"CODA_PROFILE": "lab"}, home_dir=tmp_path)
+        text = memory.read_text()
+        assert "keep me" in text
+        assert app_module._LAB_COACH_MARKER in text
+
+
+# ---------------------------------------------------------------------------
+# 5. "Agent speaks first" auto-launch gating
+# ---------------------------------------------------------------------------
+
+
+class TestLabAutolaunch:
+    def test_enabled_only_in_lab_mode(self):
+        app_module = _get_app_module()
+        assert app_module._lab_autolaunch_enabled(env={}) is True  # lab is default
+        assert app_module._lab_autolaunch_enabled(env={"CODA_PROFILE": "full"}) is False
+
+    def test_explicit_disable(self):
+        app_module = _get_app_module()
+        env = {"CODA_PROFILE": "lab", "CODA_LAB_AUTOLAUNCH": "false"}
+        assert app_module._lab_autolaunch_enabled(env=env) is False
+
+    def test_command_none_without_claude_binary(self, tmp_path):
+        app_module = _get_app_module()
+        env = {"CODA_PROFILE": "lab", "DATABRICKS_TOKEN": "tok"}
+        assert app_module._lab_autolaunch_command(tmp_path, env=env) is None
+
+    def test_command_none_without_token(self, tmp_path):
+        app_module = _get_app_module()
+        (tmp_path / ".local" / "bin").mkdir(parents=True)
+        (tmp_path / ".local" / "bin" / "claude").write_text("#!/bin/sh\n")
+        env = {"CODA_PROFILE": "lab"}  # no token
+        assert app_module._lab_autolaunch_command(tmp_path, env=env) is None
+
+    def test_command_built_when_ready(self, tmp_path):
+        app_module = _get_app_module()
+        (tmp_path / ".local" / "bin").mkdir(parents=True)
+        (tmp_path / ".local" / "bin" / "claude").write_text("#!/bin/sh\n")
+        env = {"CODA_PROFILE": "lab", "DATABRICKS_TOKEN": "tok"}
+        cmd = app_module._lab_autolaunch_command(tmp_path, env=env)
+        assert cmd is not None
+        assert cmd.startswith("claude ") and cmd.endswith("\n")

@@ -11,6 +11,7 @@ import signal
 import time
 import copy
 import logging
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait
 from flask import Flask, send_from_directory, request, jsonify, session
 from flask_socketio import SocketIO, emit, join_room, leave_room, disconnect
@@ -153,8 +154,22 @@ def _env_truthy(value):
 
 
 def _coda_profile(env=None):
+    """Raw CODA_PROFILE value (lowercased), or "" when unset."""
     env = env if env is not None else os.environ
     return env.get("CODA_PROFILE", "").strip().lower()
+
+
+def _resolved_profile(env=None):
+    """Effective profile. **Unset/empty resolves to ``lab``** — CoDA is
+    lab-first, so the lean footprint + guided coach are the default. Set
+    ``CODA_PROFILE=full`` explicitly for the power-user build.
+    """
+    return _coda_profile(env) or "lab"
+
+
+def _lab_mode(env=None):
+    """True when the effective profile is the lab profile (the default)."""
+    return _resolved_profile(env) == "lab"
 
 
 def _agent_enabled(agent, env=None):
@@ -162,9 +177,9 @@ def _agent_enabled(agent, env=None):
 
     Resolution order:
       1. Explicit ``ENABLE_<AGENT>`` env var (true/false) — always wins.
-      2. ``CODA_PROFILE`` preset default: ``lab`` disables all toggleable
-         agents (lean footprint = Claude + AppKit + Databricks core only); any
-         other value (incl. unset / ``full``) enables them.
+      2. ``CODA_PROFILE`` preset default: ``lab`` (the default when unset)
+         disables all toggleable agents (lean footprint = Claude + AppKit +
+         Databricks core only); ``full`` enables them.
 
     Core steps not in ``_TOGGLEABLE_AGENTS`` are always enabled.
     """
@@ -175,7 +190,7 @@ def _agent_enabled(agent, env=None):
     raw = env.get(flag)
     if raw is not None and raw.strip() != "":
         return _env_truthy(raw)
-    return _coda_profile(env) != "lab"
+    return not _lab_mode(env)
 
 
 def _enabled_setup_steps(env=None):
@@ -194,6 +209,100 @@ def _enabled_setup_steps(env=None):
         ("databricks", ["uv", "run", "python", "setup_databricks.py"]),
     ]
     return [(sid, cmd) for sid, cmd in catalog if _agent_enabled(sid, env)]
+
+
+_LAB_COACH_MARKER = "<!-- coda-lab-coach -->"
+
+
+def _inject_lab_coach(env=None, home_dir=None):
+    """Append the lab-coach block to the agent's user-memory file(s).
+
+    Lab mode only. **Additive + idempotent** (guarded by a sentinel marker):
+    it never mutates the tracked ``CLAUDE.md`` and never double-appends. Targets
+    Claude Code's global memory (``~/.claude/CLAUDE.md``) plus any *enabled*
+    agent's adapted instruction file that exists, so a lab that re-enables an
+    agent still gets the coach. Best-effort: any per-file failure is logged and
+    skipped, never fatal to boot.
+    """
+    env = env if env is not None else os.environ
+    if not _lab_mode(env):
+        return
+    coach = Path(__file__).parent / "instructions" / "lab_coach.md"
+    if not coach.exists():
+        logger.warning("instructions/lab_coach.md not found; skipping coach injection")
+        return
+    block = coach.read_text()
+    home_dir = (
+        Path(home_dir)
+        if home_dir is not None
+        else Path(os.environ.get("HOME", str(Path.home())))
+    )
+
+    # Claude's global memory always gets it (created if absent — Claude is the
+    # primary lab agent). Other agents only if enabled AND already adapted.
+    targets = [home_dir / ".claude" / "CLAUDE.md"]
+    optional = {
+        "codex": home_dir / ".codex" / "AGENTS.md",
+        "gemini": home_dir / ".gemini" / "GEMINI.md",
+    }
+    for agent, path in optional.items():
+        if _agent_enabled(agent, env) and path.exists():
+            targets.append(path)
+
+    for path in targets:
+        try:
+            existing = path.read_text() if path.exists() else ""
+            if _LAB_COACH_MARKER in existing:
+                continue  # already injected — stay idempotent
+            path.parent.mkdir(parents=True, exist_ok=True)
+            sep = "" if (existing == "" or existing.endswith("\n")) else "\n"
+            with path.open("a") as fh:
+                fh.write(f"{sep}\n{block}")
+            logger.info(f"Lab coach injected into {path}")
+        except Exception as e:  # noqa: BLE001 — never fatal to boot
+            logger.warning(f"Lab coach injection skipped for {path}: {e}")
+
+
+# --- Lab "agent speaks first" auto-launch -----------------------------------
+#
+# In the lab profile the attendee shouldn't need to know to type `claude`. On
+# the first terminal session we seed the PTY with a Claude launch carrying a
+# short opening prompt; Claude's coach memory (instructions/lab_coach.md) then
+# greets the attendee and runs the persona check. Disable with
+# CODA_LAB_AUTOLAUNCH=false.
+_LAB_AUTOLAUNCH_PROMPT = (
+    "Start the lab: greet me, ask whether I'm technical or business "
+    "(skip the question if you already have my saved persona), then guide me to "
+    "build and deploy my first Databricks app."
+)
+_lab_autolaunch_done = False  # only the first eligible lab session auto-launches
+
+
+def _lab_autolaunch_enabled(env=None):
+    """Whether lab auto-launch is on (lab mode + not explicitly disabled)."""
+    env = env if env is not None else os.environ
+    if not _lab_mode(env):
+        return False
+    raw = env.get("CODA_LAB_AUTOLAUNCH")
+    if raw is not None and raw.strip() != "":
+        return _env_truthy(raw)
+    return True
+
+
+def _lab_autolaunch_command(home_dir, env=None):
+    """Return the shell command that launches Claude with the seeded opening, or
+    ``None`` if it must not run yet (disabled, claude not installed, or no token
+    configured — in which case a later session retries).
+    """
+    env = env if env is not None else os.environ
+    if not _lab_autolaunch_enabled(env):
+        return None
+    claude_bin = Path(home_dir) / ".local" / "bin" / "claude"
+    if not claude_bin.exists():
+        return None
+    if not env.get("DATABRICKS_TOKEN", "").strip():
+        return None
+    return f'claude "{_LAB_AUTOLAUNCH_PROMPT}"\n'
 
 
 # Single-user security: only the token owner can access the terminal
@@ -550,6 +659,14 @@ def run_setup():
             for step_id, command in parallel_steps
         ]
         wait(futures)
+
+    # --- Inject the guided lab-coach block (lab profile only) ---
+    # Runs after the agent setups have written their adapted instruction files,
+    # so the additive append lands on top of them. No-op outside lab mode.
+    try:
+        _inject_lab_coach()
+    except Exception as e:  # noqa: BLE001 — never fatal to boot
+        logger.warning(f"Lab coach injection failed: {e}")
 
     # --- MLflow setup runs AFTER claude setup to avoid settings.json race ---
     # setup_mlflow.py merges env vars into ~/.claude/settings.json which
@@ -1090,7 +1207,12 @@ def index():
 
 @app.route("/api/setup-status")
 def get_setup_status():
-    return jsonify(_get_setup_state_snapshot())
+    snap = _get_setup_state_snapshot()
+    # Surface lab UX flags so the client can show the "Start building" fallback
+    # affordance and know the agent will speak first.
+    snap["lab_mode"] = _lab_mode()
+    snap["agent_speaks_first"] = _lab_autolaunch_enabled()
+    return jsonify(snap)
 
 
 @app.route("/api/app-state")
@@ -1337,6 +1459,31 @@ def create_session():
         # Start background reader thread
         thread = threading.Thread(target=read_pty_output, args=(session_id, master_fd), daemon=True)
         thread.start()
+
+        # Lab profile: the agent speaks first. On the first eligible session,
+        # seed Claude with the coach opening so the attendee is greeted without
+        # needing to type `claude`. Best-effort; if claude/token aren't ready
+        # the flag resets so a later session retries.
+        global _lab_autolaunch_done
+        do_launch = False
+        with sessions_lock:
+            if not _lab_autolaunch_done and _lab_autolaunch_enabled():
+                _lab_autolaunch_done = True
+                do_launch = True
+        if do_launch:
+            cmd = _lab_autolaunch_command(shell_env["HOME"])
+            if cmd:
+                try:
+                    os.write(master_fd, cmd.encode())
+                    logger.info("Lab autolaunch: seeded Claude coach greeting into first session")
+                except OSError as e:
+                    logger.warning(f"Lab autolaunch write failed: {e}")
+                    with sessions_lock:
+                        _lab_autolaunch_done = False
+            else:
+                # claude/token not ready yet — let a later session try again.
+                with sessions_lock:
+                    _lab_autolaunch_done = False
 
         # Telemetry: track session creation with agent type
         log_telemetry("agent", label or "shell")

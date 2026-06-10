@@ -75,8 +75,11 @@ databricks apps deploy <your-app-name> \
 | `HERMES_MODEL` | No | Hermes model name (default: `databricks-claude-opus-4-7`) |
 | `DATABRICKS_GATEWAY_HOST` | No | AI Gateway URL override. Auto-discovered from `DATABRICKS_WORKSPACE_ID` if unset. Falls back to direct model serving if neither is available |
 | `CODA_AUTH_MODE` | No | Who may use the app: `owner` (default, single user), `allowlist` (explicit emails), or `workspace` (any authenticated workspace user — for labs). See [Authorization modes](#authorization-modes) |
-| `CODA_PROFILE` | No | Agent footprint preset: `full` (default — all agents) or `lab` (lean: Claude + AppKit + Databricks core only). See [docs/lab-build.md](lab-build.md) |
-| `ENABLE_CODEX` / `ENABLE_OPENCODE` / `ENABLE_GEMINI` / `ENABLE_HERMES` | No | Per-agent install toggles. An explicit value always overrides `CODA_PROFILE`. Default `true` |
+| `CODA_PROFILE` | No | Agent footprint preset: **`lab` (default — lean: Claude + AppKit + Databricks core only, guided coach on)** or `full` (all agents). Unset resolves to `lab`. Set `full` explicitly for the power-user build. See [docs/lab-build.md](lab-build.md) |
+| `ENABLE_CODEX` / `ENABLE_OPENCODE` / `ENABLE_GEMINI` / `ENABLE_HERMES` | No | Per-agent install toggles. An explicit value always overrides `CODA_PROFILE`. Unset ⇒ governed by profile (off in `lab`, on in `full`) |
+| `LAKEBASE_INSTANCE_NAME` | No | Name for the on-demand Lakebase instance (default `coda-lab`). **No DB is provisioned at boot** — one is created/reused only when a built app needs persistence (`scripts/lakebase_ensure.py`) |
+| `APPKIT_VERSION` | No | Pin a fleet-wide AppKit version so every attendee scaffolds an identical app (Control Tower injects this for consistency). Unset ⇒ cooldown-respected latest stable |
+| `LAB_RESOURCE_TAGS` | No | `k=v,k2=v2` tags applied as `custom_tags` to on-demand Lakebase instances for cost attribution / teardown (Control Tower injects this) |
 | `MLFLOW_TRACING_ENABLED` | No | Set to `"true"` to enable MLflow tracing for Claude, Codex, and Gemini (default `"false"`) |
 
 ## Authorization modes
@@ -118,6 +121,27 @@ make lab-verify PROFILE=<profile> APP_NAME=coda-lab
 This sets `CODA_AUTH_MODE=workspace` + `CODA_PROFILE=lab` on the deployment —
 no source edits, no per-attendee patching. `scripts/lab_deploy.py` is
 idempotent and safe to retry. Full details: [docs/lab-build.md](lab-build.md).
+
+### App persistence is on-demand (no clicks)
+
+CoDA never provisions a database at boot. When the agent builds an app that
+needs persistence, it runs `scripts/lakebase_ensure.py` to create (or reuse) a
+single Lakebase instance per lab and binds it non-interactively — so attendees
+never hit the "missing required resource Postgres" prompt or click resources in
+the UI. Read-only apps skip Lakebase and incur no DB cost. The deploying
+identity needs the database-create entitlement; see [docs/lab-build.md](lab-build.md#app-persistence-on-demand-lakebase-no-ui-clicks).
+
+### Control Tower owns the fleet; CoDA owns the instance
+
+The boundary is deliberate: **Control Tower** provisions attendee workspaces,
+deploys CoDA, and tears the fleet down. **CoDA** does not ship fleet-management
+scripts. Instead it exposes hooks Control Tower drives via env:
+
+- `APPKIT_VERSION` — pin one AppKit version across the whole fleet so every
+  attendee scaffolds an identical app.
+- `LAB_RESOURCE_TAGS` — tags stamped onto any on-demand Lakebase instance, plus
+  the deterministic `LAKEBASE_INSTANCE_NAME`, so Control Tower can attribute
+  cost and tear instances down by tag/name with zero CoDA-side bookkeeping.
 
 ## Gunicorn Configuration
 

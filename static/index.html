@@ -350,6 +350,7 @@
           <span class="speak-dot" style="display:none;"></span>
           &#x1F3A4;
         </button>
+        <button id="start-building-btn" title="Start building with the AI coach" style="display:none;">&#x2728; Start building</button>
         <button id="sessions-btn" title="Manage sessions (Ctrl+Shift+S)">&#x2630;</button>
         <button id="split-btn" title="Split pane (Alt+Shift+D)">&#x229E;</button>
         <button id="close-pane-btn" title="Close pane (Alt+Shift+W)" style="display:none;">&#x2715;</button>
@@ -859,6 +860,24 @@
       if (dictationActive) closeDictation();
       else startDictation();
     });
+
+    // Lab fallback: "Start building" launches the Claude coach in the active
+    // pane. The server already auto-launches it on the first session in lab
+    // mode; this button is the manual fallback (and is only shown in lab mode).
+    const startBuildingBtn = document.getElementById('start-building-btn');
+    const LAB_LAUNCH_CMD = 'claude "Start the lab: greet me, ask whether I\'m technical or business (skip if you already have my saved persona), then guide me to build and deploy my first Databricks app."\r';
+    startBuildingBtn.addEventListener('click', () => {
+      const ap = getActivePane();
+      if (ap && ap.sessionId) {
+        sendInput(LAB_LAUNCH_CMD, ap.sessionId);
+        ap.term.focus();
+      }
+    });
+    // Reveal the button in lab mode.
+    fetch('/api/setup-status')
+      .then(r => r.json())
+      .then(d => { if (d && d.lab_mode) startBuildingBtn.style.display = 'flex'; })
+      .catch(() => {});
     document.getElementById('dictation-send').addEventListener('click', sendDictation);
     document.getElementById('dictation-cancel').addEventListener('click', closeDictation);
     dictationInput.addEventListener('keydown', e => {

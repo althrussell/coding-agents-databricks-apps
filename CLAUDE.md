@@ -75,6 +75,24 @@ Before starting any new project or documentation:
 
 3. **Then start working** - your commits will be backed up to Workspace
 
+## How to work with users — clarify, recommend, confirm
+
+Apply this to every request (it matters most for people building their first
+app):
+
+- **Do not rush to build.** For any app or resource request, first state your
+  **recommended** approach and the key choices, then confirm with the user
+  before scaffolding, provisioning, or deploying anything. Plan, then build.
+- **Lead with your recommendation.** When you ask a question, give your
+  recommended option first (with a one-line "why"), then list alternatives.
+  Never present a bare list of options with no guidance.
+- **Clarify which Databricks resources are actually needed** before creating
+  any — app type, whether it needs persistence (Lakebase) vs analytics (SQL
+  warehouse), catalog/schema, model/serving endpoint. Don't provision resources
+  the app doesn't need.
+- **End every build with the payoff:** give the user the live app URL and a
+  short, plain-language recap of what you built.
+
 ## Building Apps — default to AppKit + Lakebase
 
 When the user asks to build an app, dashboard, tool, or UI **without naming a
@@ -83,11 +101,15 @@ framework**, the default is **AppKit** (React + Vite + TypeScript) with a
 Python app. This is a hard default, not a preference.
 
 - Follow the **databricks-apps-python** skill. Scaffold with `databricks apps init`
-  (AppKit template + Lakebase plugin), then immediately apply the CoDA UX
-  defaults in the skill's `7-appkit-ux.md` (branded app shell, theme provider +
-  light/dark, mandatory loading/empty/error states, responsive layout, lucide
-  icons, and the app-type→layout map). New apps should look polished with no UX
-  prompting from the user.
+  (AppKit template), then immediately apply the CoDA UX defaults in the skill's
+  `7-appkit-ux.md` (branded app shell, theme provider + light/dark, mandatory
+  loading/empty/error states, responsive layout, lucide icons, and the
+  app-type→layout map). New apps should look polished with no UX prompting from
+  the user.
+- **Never make the user click resources in the Databricks UI.** Only when the
+  app needs persistence, provision Lakebase on demand with
+  `scripts/lakebase_ensure.py` and bind it non-interactively (see the
+  golden-path scaffold in the skill). Apps with no saved state skip Lakebase.
 - Use a Python framework (Streamlit/Dash/Gradio/Flask/FastAPI/Reflex) ONLY when
   the user explicitly names one, explicitly wants Python, or you are extending
   an existing Python app. If the request is ambiguous, choose AppKit.

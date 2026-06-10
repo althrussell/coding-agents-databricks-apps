@@ -23,6 +23,8 @@ SKILL_MD = SKILL_DIR / "SKILL.md"
 FRAMEWORKS_MD = SKILL_DIR / "3-frameworks.md"
 UX_MD = SKILL_DIR / "7-appkit-ux.md"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
+LAKEBASE_MD = SKILL_DIR / "5-lakebase.md"
+LAB_COACH_MD = REPO_ROOT / "instructions" / "lab_coach.md"
 OVERLAY_DIR = SKILL_DIR / "examples" / "appkit-ux"
 
 
@@ -134,3 +136,64 @@ class TestStarterOverlay:
         text = _read(UX_MD)
         for ref in ("app-shell.tsx", "theme-provider.tsx", "data-view-states.tsx"):
             assert ref in text, f"UX guide must reference overlay file {ref}"
+
+
+# ---------------------------------------------------------------------------
+# On-demand, non-interactive Lakebase binding (no UI clicks)
+# ---------------------------------------------------------------------------
+
+
+class TestLakebaseBinding:
+    def test_skill_uses_non_interactive_binding(self):
+        text = _read(SKILL_MD).lower()
+        # The golden path must drive lakebase_ensure.py + non-interactive bind,
+        # not an interactive "when prompted, choose..." flow.
+        assert "lakebase_ensure.py" in text
+        assert "--auto-approve" in text
+        assert "~/.coda/lakebase.json" in text
+        assert "when prompted" not in text, (
+            "SKILL.md must NOT instruct the user to answer interactive prompts"
+        )
+
+    def test_lakebase_guide_drops_ui_click_setup(self):
+        text = _read(LAKEBASE_MD)
+        assert "lakebase_ensure.py" in text
+        lower = text.lower()
+        assert "on-demand" in lower or "on demand" in lower
+        # The old "add Lakebase as an app resource in the Databricks UI" click
+        # path must be gone.
+        assert "in the databricks ui" not in lower
+
+    def test_helper_script_exists(self):
+        assert (REPO_ROOT / "scripts" / "lakebase_ensure.py").exists()
+
+    def test_claude_md_forbids_ui_clicks(self):
+        text = _read(CLAUDE_MD).lower()
+        assert "lakebase_ensure.py" in text
+        assert "never make the user click" in text
+
+
+# ---------------------------------------------------------------------------
+# The guided lab-coach contract exists and is wired
+# ---------------------------------------------------------------------------
+
+
+class TestLabCoachContract:
+    def test_claude_md_has_always_on_guided_contract(self):
+        text = _read(CLAUDE_MD).lower()
+        # Clarify → recommend → confirm, plus the build payoff.
+        assert "lead with your recommendation" in text
+        assert "confirm" in text
+        assert "live app url" in text
+
+    def test_lab_coach_file_exists_with_persona_and_payoff(self):
+        text = _read(LAB_COACH_MD)
+        lower = text.lower()
+        assert "technical" in lower and "business" in lower
+        assert "~/.coda/persona" in text, "coach must persist persona"
+        assert "live app url" in lower
+        assert "start over" in lower, "coach must offer a reset path"
+
+    def test_lab_coach_has_injection_marker(self):
+        # app._inject_lab_coach relies on this sentinel for idempotency.
+        assert "<!-- coda-lab-coach -->" in _read(LAB_COACH_MD)

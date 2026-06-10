@@ -18,10 +18,24 @@ Lakebase provides low-latency transactional storage for Databricks Apps via a ma
 
 ---
 
-## Setup
+## Setup (on-demand, zero clicks)
 
-1. Add Lakebase as an app resource in the Databricks UI (resource type: **Lakebase database**)
-2. Databricks auto-injects PostgreSQL connection env vars:
+Do NOT tell the user to click around the Databricks UI. Provision Lakebase from
+the terminal **only when the app actually needs persistence**, then bind it
+non-interactively:
+
+1. Provision (or reuse) the lab's Lakebase instance:
+   ```bash
+   uv run python /app/python/source_code/scripts/lakebase_ensure.py
+   ```
+   This is idempotent (one instance per lab, reused across apps), waits until the
+   instance is available, and writes the binding to `~/.coda/lakebase.json`. It
+   prints the exact `databricks apps init --resource` flags to use. If it exits
+   non-zero (e.g. the deploying identity lacks the database-create entitlement),
+   the app can still be built without persistence — ask the user first.
+2. Bind it when scaffolding (see the golden-path command in
+   [SKILL.md](SKILL.md)). Once bound as an app resource, Databricks auto-injects
+   the PostgreSQL connection env vars:
 
 | Variable | Description |
 |----------|-------------|

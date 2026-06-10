@@ -110,6 +110,7 @@ _BANNER_VARS = (
     "HERMES_PIP_URL",
     "DEEPWIKI_MCP_URL",
     "EXA_MCP_URL",
+    "LAKEBASE_INSTANCE_NAME",
 )
 
 # Vars treated as secrets in the banner (full value masked).

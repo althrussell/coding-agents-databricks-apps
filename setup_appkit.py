@@ -20,7 +20,10 @@ still scaffold AppKit on demand; this is a warm-start optimisation. Honors the
 NPM_REGISTRY mirror because npm reads npm_config_registry from the environment,
 which enterprise_config.bootstrap() has already pushed in.
 
-Disable with ENABLE_APPKIT_PRECACHE=false (the version pin is still recorded).
+Disable the npm precache with ENABLE_APPKIT_PRECACHE=false (the version pin is
+still recorded). Disable the throwaway template-clone warm with
+ENABLE_APPKIT_WARM_SCAFFOLD=false. Pin a fleet-wide version with APPKIT_VERSION
+so every attendee in a lab gets an identical AppKit.
 """
 import os
 import subprocess
@@ -94,6 +97,40 @@ def _cache_add(spec: str) -> None:
         print(f"Skipped pre-cache of {spec}: {e}")
 
 
+def _warm_scaffold() -> None:
+    """Pre-clone the AppKit template once into a throwaway dir to warm the
+    template clone + npm install cache, so the first real ``databricks apps
+    init`` in a lab is fast.
+
+    Scaffolds with NO features (so it never hits the interactive Postgres
+    resource prompt the lakebase feature requires), then deletes the dir — only
+    the on-disk npm/template caches survive. Best-effort and non-fatal: any
+    failure (no CLI, no network, prompt) just skips the warm-up.
+    """
+    import shutil
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="appkit-warm-")
+    try:
+        result = subprocess.run(
+            ["databricks", "apps", "init", "--name", "warm-cache", "--auto-approve"],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            cwd=tmp,
+            env={**os.environ, "HOME": str(home)},
+        )
+        if result.returncode == 0:
+            print("Warmed AppKit template clone + deps cache.")
+        else:
+            err = (result.stderr or result.stdout).strip()
+            print(f"Skipped template warm (rc={result.returncode}): {err[:300]}")
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print(f"Skipped template warm: {e}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     version = _resolve_version()
 
@@ -113,6 +150,14 @@ def main() -> int:
     ui_version = os.environ.get("APPKIT_UI_VERSION", "").strip() or get_npm_version(APPKIT_UI_PKG)
     ui_spec = f"{APPKIT_UI_PKG}@{ui_version}" if ui_version else APPKIT_UI_PKG
     _cache_add(ui_spec)
+
+    # Warm the actual scaffold path (template clone + npm install) so the first
+    # `databricks apps init` in a lab is fast. Skippable independently of the
+    # package precache for environments where the CLI can't init headlessly.
+    if _truthy(os.environ.get("ENABLE_APPKIT_WARM_SCAFFOLD")):
+        _warm_scaffold()
+    else:
+        print("ENABLE_APPKIT_WARM_SCAFFOLD=false — skipping template warm.")
 
     print("AppKit precache step complete.")
     return 0
