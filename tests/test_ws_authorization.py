@@ -22,6 +22,15 @@ def _get_app_module():
         return app_module
 
 
+@pytest.fixture(autouse=True)
+def _force_owner_mode():
+    """This file verifies owner-mode fail-closed parity. The app's default
+    auth mode is now ``workspace`` (lab-first), so pin ``owner`` for every test
+    here to exercise the single-user enforcement these cases assert."""
+    with mock.patch.dict("os.environ", {"CODA_AUTH_MODE": "owner"}, clear=False):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # 1. Fail-closed when app_owner is None on Databricks Apps
 # ---------------------------------------------------------------------------

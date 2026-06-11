@@ -43,7 +43,8 @@ class TestSessionEndpointAuth:
         try:
             app_module.app_owner = "owner@databricks.com"
             client = _make_client(app_module)
-            with mock.patch.object(app_module, "_is_databricks_apps", return_value=True):
+            with mock.patch.dict("os.environ", {"CODA_AUTH_MODE": "owner"}, clear=False), \
+                 mock.patch.object(app_module, "_is_databricks_apps", return_value=True):
                 if method == "GET":
                     resp = client.get(path, headers={"X-Forwarded-Email": "intruder@evil.com"})
                 else:
@@ -131,7 +132,8 @@ class TestConfigurePatAuth:
         try:
             app_module.app_owner = "owner@databricks.com"
             client = _make_client(app_module)
-            with mock.patch.object(app_module, "_is_databricks_apps", return_value=True):
+            with mock.patch.dict("os.environ", {"CODA_AUTH_MODE": "owner"}, clear=False), \
+                 mock.patch.object(app_module, "_is_databricks_apps", return_value=True):
                 resp = client.post(
                     "/api/configure-pat",
                     json={"token": "dapi-attacker"},
@@ -396,7 +398,9 @@ class TestAdditionalAuthorizedEmails:
         try:
             app_module.app_owner = "sp-client-id"
             with mock.patch.dict(
-                "os.environ", {"CONTROL_TOWER_AUTHORIZED_EMAILS": "attendee@databricks.com"}
+                "os.environ",
+                {"CODA_AUTH_MODE": "owner",
+                 "CONTROL_TOWER_AUTHORIZED_EMAILS": "attendee@databricks.com"},
             ), mock.patch.object(app_module, "_is_databricks_apps", return_value=True), \
                  app_module.app.test_request_context(
                      headers={"X-Forwarded-Email": "intruder@evil.com"}
@@ -412,7 +416,7 @@ class TestAdditionalAuthorizedEmails:
         original_owner = app_module.app_owner
         try:
             app_module.app_owner = "owner@databricks.com"
-            with mock.patch.dict("os.environ", {}, clear=False), \
+            with mock.patch.dict("os.environ", {"CODA_AUTH_MODE": "owner"}, clear=False), \
                  mock.patch.object(app_module, "_is_databricks_apps", return_value=True), \
                  app_module.app.test_request_context(
                      headers={"X-Forwarded-Email": "intruder@evil.com"}
@@ -535,17 +539,22 @@ class TestCodaAuthModeMatrix:
             authorized, user = app_module.check_authorization()
             assert authorized is False
 
-    def test_unknown_mode_falls_back_to_owner(self):
-        """An unrecognised CODA_AUTH_MODE must behave like the safe 'owner' default."""
+    def test_unknown_mode_falls_back_to_workspace(self):
+        """An unrecognised/unset CODA_AUTH_MODE defaults to 'workspace' (lab-first):
+        any authenticated workspace user is authorized, but a missing identity on
+        Databricks Apps still fails closed."""
         app_module = _get_app_module()
-        with _auth_ctx(app_module, "bogus-mode", "intruder@evil.com",
-                       owner="owner@databricks.com"):
-            authorized, _ = app_module.check_authorization()
-            assert authorized is False
-        with _auth_ctx(app_module, "bogus-mode", "owner@databricks.com",
+        # Any authenticated workspace user is allowed under the workspace default.
+        with _auth_ctx(app_module, "bogus-mode", "anyone@databricks.com",
                        owner="owner@databricks.com"):
             authorized, _ = app_module.check_authorization()
             assert authorized is True
+        # Still fails closed when no verified identity is present on Apps.
+        with _auth_ctx(app_module, "bogus-mode", header_email=None,
+                       owner="owner@databricks.com"):
+            authorized, user = app_module.check_authorization()
+            assert authorized is False
+            assert user == "unknown"
 
     # ---- configure-pat gate honours the mode ----
 

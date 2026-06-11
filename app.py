@@ -781,22 +781,23 @@ def _coda_auth_mode():
     """Resolve the active authorization mode from ``CODA_AUTH_MODE``.
 
     Modes:
-      - ``owner`` (default): single-user. Authorized iff the request identity
-        is the resolved app owner OR in the explicit allowlist. Fails CLOSED on
-        Databricks Apps when the owner can't be resolved. This is the original
-        CoDA behaviour.
+      - ``workspace`` (DEFAULT): any authenticated workspace user is authorized
+        (the request must carry a verified identity header). Lab-first: isolation
+        is handled by provisioning one app instance per attendee in their own
+        workspace, so no per-attendee allowlist patching is needed. This is the
+        default so a simple deploy is open to everyone in the workspace.
+      - ``owner``: single-user. Authorized iff the request identity is the
+        resolved app owner OR in the explicit allowlist. Fails CLOSED on
+        Databricks Apps when the owner can't be resolved. Set this to lock the
+        app to yourself (the original CoDA behaviour).
       - ``allowlist``: authorized iff the request identity is in the explicit
         allowlist (owner is also allowed when resolved). Owner resolution is
         NOT required — works for SP-deployed apps with a known attendee set.
-      - ``workspace``: any authenticated workspace user is authorized (the
-        request must carry a verified identity header). Isolation is handled by
-        provisioning one app instance per attendee in their own workspace, so
-        Control Tower no longer needs to patch the app source / allowlist.
 
-    Unknown / unset values fall back to ``owner``.
+    Unknown / unset values fall back to ``workspace``.
     """
     mode = os.environ.get("CODA_AUTH_MODE", "").strip().lower()
-    return mode if mode in _VALID_AUTH_MODES else "owner"
+    return mode if mode in _VALID_AUTH_MODES else "workspace"
 
 
 def _user_is_authorized(current_user):
