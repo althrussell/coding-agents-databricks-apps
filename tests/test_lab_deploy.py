@@ -153,34 +153,14 @@ class _Repos:
 
 
 class _WorkspaceSettingsV2:
-    """Fakes the settingsv2 API used by OBO provisioning.
+    """Records patch_public_workspace_setting calls (OBO scope enablement)."""
 
-    By default metadata is empty (so resolve_setting_name falls back to the
-    camelCase candidate) and reads raise ResourceDoesNotExist (so ensure_obo_scopes
-    proceeds to patch) — mirroring the original live-workspace failure shape.
-    """
-
-    def __init__(self, metadata_names=None, reads=None):
-        self._metadata_names = metadata_names or []
-        self._reads = reads or {}  # name -> setting-like object
+    def __init__(self):
         self.patch_calls = []
-
-    def list_workspace_settings_metadata(self):
-        return iter(_Meta(n) for n in self._metadata_names)
-
-    def get_public_workspace_setting(self, name):
-        if name in self._reads:
-            return self._reads[name]
-        raise RuntimeError("ResourceDoesNotExist")
 
     def patch_public_workspace_setting(self, name, setting):
         self.patch_calls.append((name, setting))
         return setting
-
-
-class _Meta:
-    def __init__(self, name):
-        self.name = name
 
 
 class _FakeClient:
@@ -274,12 +254,11 @@ def test_deploy_lab_app_injects_lab_contract_env():
         "/Workspace/Users/user@example.com/coding-agents-databricks-apps"
     )
     assert env["CODA_OBO_ENABLED"] == "true"
-    # OBO enabled headlessly: workspace scope allowlist patched before create,
-    # using the camelCase REST setting name and the wildcard allowlist value.
+    # OBO enabled headlessly: workspace scope allowlist patched before create.
     assert client.workspace_settings_v2.patch_calls
     patched_name, patched_setting = client.workspace_settings_v2.patch_calls[0]
-    assert patched_name == "allowedAppsUserApiScopes"
-    assert patched_setting.allowed_apps_user_api_scopes.allowed_scopes == ["*"]
+    assert patched_name == "allowed_apps_user_api_scopes"
+    assert patched_setting.allowed_apps_user_api_scopes.allowed_scopes == ["all-apis"]
     # Attendee granted CAN_MANAGE by default.
     assert apps.perm_calls and apps.perm_calls[0][0] == "coda-lab"
 

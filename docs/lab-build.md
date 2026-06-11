@@ -184,55 +184,37 @@ carrying a fresh token. CoDA handles this in two ways:
 
 ### Provisioning (headless, by `scripts/lab_deploy.py`)
 
-OBO needs three pieces of workspace/account/app config. `lab_deploy.py`
-provisions them headlessly (best-effort) so Control Tower (and `make lab-deploy`)
-need no manual UI steps:
+OBO needs two pieces of workspace/app config, both provisioned headlessly so
+Control Tower (and `make lab-deploy`) need no manual UI steps:
 
-1. **Workspace scope allowlist** — `ensure_obo_scopes` resolves the real setting
-   name, reads it, and only patches when it doesn't already cover the request.
-   On live lab workspaces this is already effectively `["*"]`, so it's a no-op.
-2. **OBO gates** — `check_obo_gates` reads (and best-effort enables) the boolean
-   gates: `enableOboUserApps` (general OBO-for-user-apps, usually already on) and
-   **`agentsObo`** — the agent-specific gate that actually decides whether an
-   app's agents may use the forwarded token.
-3. **Per-app scopes** — the app is created with `user_api_scopes=["all-apis"]`
-   (`ensure_app` / `enable_obo_and_create_app`).
+1. **Workspace scope allowlist** — `patch_public_workspace_setting` sets
+   `allowed_apps_user_api_scopes = ["all-apis"]` so apps in the workspace may
+   request the user token with full API breadth (`ensure_obo_scopes`).
+2. **Per-app scopes** — the app is created with
+   `user_api_scopes=["all-apis"]` (`ensure_app` / `enable_obo_and_create_app`).
 
-> **Setting-name gotcha (learned the hard way):** the settings REST path
-> `/api/2.1/settings/{name}` uses **camelCase** resource names
-> (`allowedAppsUserApiScopes`), which do **not** match the snake_case SDK
-> dataclass *field* names (`allowed_apps_user_api_scopes`). Passing the
-> snake_case form as `name` returns `ResourceDoesNotExist`. `resolve_setting_name`
-> discovers the correct name via `list_workspace_settings_metadata()` and matches
-> case/underscore-insensitively, so either spelling resolves.
-
-The patches need **workspace-admin** auth (Control Tower has it), and `agentsObo`
-may be **account/preview-scoped** (a workspace patch may not stick). Each step is
-independently guarded: a non-admin / not-yet-enabled run logs a clear warning and
-continues — the deploy still succeeds; attendees fall back to the PAT prompt until
-OBO is fully enabled. Updated Control Tower contract (per attendee):
+The workspace patch needs **workspace-admin** auth (Control Tower has it). A
+non-admin local `lab_deploy.py` run logs a warning and continues — the deploy
+still succeeds; OBO can be enabled separately, or attendees use the PAT prompt.
+Updated Control Tower contract (per attendee):
 
 ```
-1. resolve + (if needed) patch allowedAppsUserApiScopes  (usually already ["*"])
-2. check/enable gates: enableOboUserApps, agentsObo       (agentsObo is the blocker)
-3. apps.create(App(name, user_api_scopes=["all-apis"], ...))
-4. apps.deploy + apps.update_permissions                  (unchanged)
-5. env: CODA_AUTH_MODE=workspace, CODA_PROFILE=lab        (OBO on by default;
+1. patch_public_workspace_setting(allowed_apps_user_api_scopes=["all-apis"])
+2. apps.create(App(name, user_api_scopes=["all-apis"], ...))
+3. apps.deploy + apps.update_permissions  (unchanged)
+4. env: CODA_AUTH_MODE=workspace, CODA_PROFILE=lab   (OBO on by default;
         pass CODA_OBO_ENABLED=false to opt out)
 ```
 
-### Account-level `agentsObo` gate (one-time, fleet setup)
+### Residual preview-gate validation (one-time per account)
 
-Empirically, on the live labs workspace the scope allowlist
-(`allowedAppsUserApiScopes`) was already `["*"]` and `enableOboUserApps` was
-already `True` — the actual blocker was **`agentsObo` = False**. This is the
-account/preview-level **"On-Behalf-Of User Authorization"** toggle for agents.
-
-> **Fleet prerequisite:** enable `agentsObo` **once at the account/preview level**
-> (account previews apply to all workspaces); it is **not** a reliable
-> per-attendee workspace patch. `check_obo_gates` attempts a workspace-level
-> enable and reports the effective value, but if it can't stick, an operator must
-> flip the account toggle once. Until then, agents fall back to the PAT prompt.
+> **TODO / validate once:** Confirm on ONE real attendee workspace whether
+> `patch_public_workspace_setting(allowed_apps_user_api_scopes=["all-apis"])` is
+> **sufficient on its own**, or whether the **account-level "On-Behalf-Of User
+> Authorization" Previews toggle** must also be enabled first. If the account
+> toggle is required, it is a **one-time account action** (account previews apply
+> to all workspaces) — record it here as a fleet-setup prerequisite, not a
+> per-attendee step. _Status: not yet validated on a live account._
 
 ## Attendee experience (lab profile)
 
