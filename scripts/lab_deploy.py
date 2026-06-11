@@ -64,12 +64,9 @@ LAB_ENV_OVERRIDES: dict[str, str] = {
 # scope"), which silently leaves the app with no user scopes → the forwarded
 # OBO token can't call anything → agents 403 with "required scopes: all-apis".
 # So we declare the explicit set the agents actually need. The critical one for
-# the agent CLIs is ``ai-gateway`` — setup_claude points Claude Code at
-# ``{gateway_host}/anthropic`` (the Databricks AI Gateway), which is gated by the
-# ``ai-gateway`` scope. ``serving.serving-endpoints`` only covers the direct
-# ``/serving-endpoints`` fallback path, so it is NOT sufficient on a workspace
-# that has a gateway. ``iam.access-control:read`` + ``iam.current-user:read``
-# are always added by the platform as defaults, so we don't list them.
+# the agent CLIs is ``serving.serving-endpoints`` (the model-serving / Claude
+# gateway call). ``iam.access-control:read`` + ``iam.current-user:read`` are
+# always added by the platform as defaults, so we don't list them.
 #
 # NOT grantable via OBO today (the Apps API rejects them): jobs, clusters,
 # pipelines, secrets, catalog.volumes, catalog.functions, mlflow.experiments.
@@ -78,11 +75,7 @@ LAB_ENV_OVERRIDES: dict[str, str] = {
 # those scopes. Keep this list to values the Apps API actually accepts; an
 # invalid entry fails the whole create/update.
 OBO_SCOPES: list[str] = [
-    "ai-gateway",                  # Databricks AI Gateway — THE scope the agent
-                                   # CLIs need: setup_claude points Claude at
-                                   # {gateway_host}/anthropic, which is gated by
-                                   # ai-gateway, NOT serving.serving-endpoints.
-    "serving.serving-endpoints",   # direct /serving-endpoints fallback path
+    "serving.serving-endpoints",   # model serving — Claude/agent gateway calls
     "sql",                         # SQL warehouses
     "sql.statement-execution",     # Statement Execution API
     "dashboards.genie",            # Genie spaces

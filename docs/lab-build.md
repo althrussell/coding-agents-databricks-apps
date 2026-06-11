@@ -209,11 +209,8 @@ need no manual UI steps:
 > token can't call anything → agents fail with `403 ... required scopes:
 > all-apis`. The Apps scope catalog is granular and enumerated. The set we
 > declare (validated against the live API):
-> **`ai-gateway`** (the model call — Claude is pointed at
-> `{gateway_host}/anthropic`, the Databricks AI Gateway; **this is the critical
-> one**, NOT `serving.serving-endpoints`, which only covers the direct
-> `/serving-endpoints` fallback), `serving.serving-endpoints`, `sql`,
-> `sql.statement-execution`, `dashboards.genie`, `files.files`,
+> `serving.serving-endpoints` (the model/agent gateway call — the critical one),
+> `sql`, `sql.statement-execution`, `dashboards.genie`, `files.files`,
 > `vectorsearch.vector-search-indexes`, `catalog.catalogs`, `catalog.schemas`,
 > `catalog.tables`, `catalog.connections`, `workspace.workspace`. The platform
 > also auto-adds `iam.access-control:read` + `iam.current-user:read`.
