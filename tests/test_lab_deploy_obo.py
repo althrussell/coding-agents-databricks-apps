@@ -167,8 +167,10 @@ def test_enable_obo_and_create_app_sets_scopes():
 def test_obo_scopes_are_granular_not_all_apis():
     # "all-apis" is NOT a valid Apps user-authorization scope — declaring it
     # leaves the app unscoped and agents 403. The critical scope for the agent
-    # model/gateway call is serving.serving-endpoints.
+    # model call is ai-gateway (Claude -> {gateway_host}/anthropic); we also
+    # carry serving.serving-endpoints for the direct-serving fallback path.
     assert "all-apis" not in ld.OBO_SCOPES
+    assert "ai-gateway" in ld.OBO_SCOPES
     assert "serving.serving-endpoints" in ld.OBO_SCOPES
 
 
