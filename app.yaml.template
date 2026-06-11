@@ -7,18 +7,18 @@ env:
   - name: DATABRICKS_TOKEN
     valueFrom: DATABRICKS_TOKEN
   # Authorization mode for who may use this app:
-  #   owner      (default) — single-user: only the app owner (plus any emails in
+  #   workspace  (DEFAULT) — ANY authenticated workspace user. Lab-first: each
+  #              attendee gets their own isolated app instance, so this is safe
+  #              and requires zero per-attendee allowlist patching.
+  #   owner      — single-user: only the app owner (plus any emails in
   #              CONTROL_TOWER_AUTHORIZED_EMAILS / AUTHORIZED_EMAILS /
-  #              DATABRICKS_APP_AUTHORIZED_EMAIL).
+  #              DATABRICKS_APP_AUTHORIZED_EMAIL). Use to lock the app to yourself.
   #   allowlist  — only the explicit allowlist emails (owner also allowed when
   #              resolved). Owner resolution NOT required — good for SP-deployed
   #              apps with a known attendee set.
-  #   workspace  — ANY authenticated workspace user. Use for large-scale labs
-  #              where each attendee gets their own isolated app instance, so
-  #              Control Tower no longer needs to patch the app source/allowlist.
-  #              scripts/lab_deploy.py sets this automatically.
+  # app.yaml env is authoritative at runtime — set the value HERE.
   - name: CODA_AUTH_MODE
-    value: "owner"
+    value: "workspace"
   - name: ANTHROPIC_MODEL
     value: databricks-claude-opus-4-6
   - name: GEMINI_MODEL

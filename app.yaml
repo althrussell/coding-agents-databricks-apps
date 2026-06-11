@@ -4,6 +4,16 @@ command:
 env:
   - name: HOME
     value: /app/python/source_code
+  # Authorization mode — who may open this app. DEFAULT: workspace (lab-first).
+  #   workspace  — ANY authenticated workspace user (each lab attendee gets their
+  #                own isolated app instance, so this is safe + zero-friction).
+  #   owner      — single-user: only the app owner (plus CONTROL_TOWER_AUTHORIZED_EMAILS
+  #                / AUTHORIZED_EMAILS / DATABRICKS_APP_AUTHORIZED_EMAIL).
+  #   allowlist  — only the explicit allowlist emails (owner also allowed when resolved).
+  # NOTE: app.yaml env is authoritative at runtime — set the value HERE, not via
+  # deployment env_vars (those are not injected into the container).
+  - name: CODA_AUTH_MODE
+    value: "workspace"
   - name: ANTHROPIC_MODEL
     value: databricks-claude-opus-4-7
   - name: GEMINI_MODEL
