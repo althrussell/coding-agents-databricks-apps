@@ -195,31 +195,8 @@ need no manual UI steps:
    gates: `enableOboUserApps` (general OBO-for-user-apps, usually already on) and
    **`agentsObo`** — the agent-specific gate that actually decides whether an
    app's agents may use the forwarded token.
-3. **Per-app scopes** — the app declares a **granular** `user_api_scopes` set
-   (`OBO_SCOPES` in `lab_deploy.py`). `ensure_app` reconciles them on an
-   existing app too (via `apps.update`), so a redeploy self-heals an app that
-   was created before OBO or with the wrong scopes. New scopes take effect after
-   the app restarts (the deploy step does this) and the attendee re-consents on
-   next load.
-
-> **Scope-vocabulary gotcha (learned the hard way):** `"all-apis"` is **NOT** a
-> valid Databricks Apps user-authorization scope. The Apps API rejects it
-> (`InvalidParameterValue: The specified scope all-apis is not a valid scope`),
-> which silently leaves the app with **no** user scopes → the forwarded OBO
-> token can't call anything → agents fail with `403 ... required scopes:
-> all-apis`. The Apps scope catalog is granular and enumerated. The set we
-> declare (validated against the live API):
-> `serving.serving-endpoints` (the model/agent gateway call — the critical one),
-> `sql`, `sql.statement-execution`, `dashboards.genie`, `files.files`,
-> `vectorsearch.vector-search-indexes`, `catalog.catalogs`, `catalog.schemas`,
-> `catalog.tables`, `catalog.connections`, `workspace.workspace`. The platform
-> also auto-adds `iam.access-control:read` + `iam.current-user:read`.
->
-> **Not grantable via OBO today** (the Apps API rejects them): `jobs`,
-> `clusters`, `pipelines`, `secrets`, `catalog.volumes`, `catalog.functions`,
-> `mlflow.experiments`. Agent operations against those APIs cannot run under the
-> attendee's OBO token until the platform adds those scopes — they fall back to
-> the app service principal / PAT.
+3. **Per-app scopes** — the app is created with `user_api_scopes=["all-apis"]`
+   (`ensure_app` / `enable_obo_and_create_app`).
 
 > **Setting-name gotcha (learned the hard way):** the settings REST path
 > `/api/2.1/settings/{name}` uses **camelCase** resource names
@@ -238,8 +215,7 @@ OBO is fully enabled. Updated Control Tower contract (per attendee):
 ```
 1. resolve + (if needed) patch allowedAppsUserApiScopes  (usually already ["*"])
 2. check/enable gates: enableOboUserApps, agentsObo       (agentsObo is the blocker)
-3. apps.create/update(App(name, user_api_scopes=[granular set incl.
-        serving.serving-endpoints], ...))                 (NOT "all-apis")
+3. apps.create(App(name, user_api_scopes=["all-apis"], ...))
 4. apps.deploy + apps.update_permissions                  (unchanged)
 5. env: CODA_AUTH_MODE=workspace, CODA_PROFILE=lab        (OBO on by default;
         pass CODA_OBO_ENABLED=false to opt out)

@@ -91,11 +91,10 @@ class _Compute:
 
 
 class _App:
-    def __init__(self, name, state="ACTIVE", url="https://app.example", user_api_scopes=None):
+    def __init__(self, name, state="ACTIVE", url="https://app.example"):
         self.name = name
         self.url = url
         self.compute_status = _Compute(state) if state else None
-        self.user_api_scopes = user_api_scopes
 
 
 class _Apps:
@@ -108,7 +107,6 @@ class _Apps:
         self.create_calls = []
         self.deploy_calls = []
         self.perm_calls = []
-        self.update_calls = []
 
     def get(self, name):
         self.calls.append(("get", name))
@@ -141,12 +139,6 @@ class _Apps:
 
     def update_permissions(self, name, access_control_list):
         self.perm_calls.append((name, access_control_list))
-
-    def update(self, name, app):
-        self.update_calls.append((name, app))
-        if self._existing is not None:
-            self._existing.user_api_scopes = app.user_api_scopes
-        return self._existing
 
 
 class _Repos:
@@ -250,37 +242,6 @@ def test_ensure_app_reuses_when_active():
     client = _FakeClient(apps)
     lab_deploy.ensure_app(client, "coda-lab")
     assert apps.create_calls == []  # did NOT recreate
-
-
-def test_ensure_app_reconciles_scopes_on_existing_app():
-    # App exists with NO scopes (the bug that 403'd Claude). A redeploy that
-    # passes scopes must PATCH them onto the existing app, not silently reuse.
-    apps = _Apps(existing=_App("coda-lab", state="ACTIVE", user_api_scopes=None))
-    client = _FakeClient(apps)
-    lab_deploy.ensure_app(client, "coda-lab", user_api_scopes=["serving.serving-endpoints"])
-    assert apps.create_calls == []  # reused, not recreated
-    assert apps.update_calls and apps.update_calls[0][0] == "coda-lab"
-    assert apps.update_calls[0][1].user_api_scopes == ["serving.serving-endpoints"]
-
-
-def test_ensure_app_skips_reconcile_when_scopes_already_cover():
-    apps = _Apps(existing=_App("coda-lab", state="ACTIVE",
-                               user_api_scopes=["serving.serving-endpoints", "sql"]))
-    client = _FakeClient(apps)
-    lab_deploy.ensure_app(client, "coda-lab", user_api_scopes=["serving.serving-endpoints"])
-    assert apps.update_calls == []  # already covered → no PATCH
-
-
-def test_ensure_app_reconcile_never_raises_on_update_failure():
-    class _BoomApps(_Apps):
-        def update(self, name, app):
-            raise RuntimeError("not permitted")
-
-    apps = _BoomApps(existing=_App("coda-lab", state="ACTIVE", user_api_scopes=None))
-    client = _FakeClient(apps)
-    # Must not raise — deploy continues with existing scopes.
-    lab_deploy.ensure_app(client, "coda-lab", user_api_scopes=["serving.serving-endpoints"])
-    assert apps.create_calls == []
 
 
 def test_ensure_app_waits_then_recreates_when_deleting():
