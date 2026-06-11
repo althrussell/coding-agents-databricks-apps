@@ -30,8 +30,6 @@ the **full** profile differs, and the contract Control Tower relies on.
 | App builder          | AppKit (+ Lakebase on demand)              | AppKit (+ Lakebase on demand)              |
 | Content-filter proxy | off (no OpenCode)                          | on (OpenCode needs it)                     |
 | `CODA_AUTH_MODE`     | `workspace` (any authenticated user)       | `owner` (single user)                      |
-| Agent auth           | **OBO** (agents act as the attendee; no PAT prompt) | PAT (user pastes a token)         |
-| `CODA_OBO_ENABLED`   | `true` (on by default; lab-only)           | ignored (always PAT)                       |
 | Set by               | `scripts/lab_deploy.py` / `make lab-deploy`| `make deploy` w/ `CODA_PROFILE=full` in app.yaml |
 
 ## Why a lean profile
@@ -131,91 +129,6 @@ reinitializing git there cannot touch the workspace Git folder, its repo link,
 or workspace sync (the post-commit hook only syncs `~/projects/*`). The reinit
 is also fully defensive — any failure is logged and non-fatal.
 
-## Agent authentication: OBO by default (attendee owns their work)
-
-`CODA_AUTH_MODE` decides who may open the app. **Agent auth** is a separate
-axis: once an attendee is in, *as whom* do the coding agents (Claude, the
-Databricks CLI, etc.) authenticate when they call Databricks APIs and deploy
-things? Two modes, gated by `CODA_OBO_ENABLED`:
-
-- **OBO (on-behalf-of-user) — the lab default.** The agents authenticate as the
-  **attendee** using the forwarded user token (`x-forwarded-access-token`) that
-  the Databricks Apps proxy injects on every authenticated request. There is **no
-  PAT prompt**, and every resource the agent creates (notebooks, jobs, apps,
-  catalogs) is **owned by the attendee** — exactly what a lab wants for
-  attribution and cleanup.
-- **PAT — the fallback.** The attendee pastes a Personal Access Token, which
-  `PATRotator` keeps fresh. Used in the full profile, or in lab when
-  `CODA_OBO_ENABLED=false`. Better for **unattended / long-running** work (see
-  the caveat below).
-
-### The gate
-
-`CODA_OBO_ENABLED` is **on by default and hard-gated to lab mode**:
-
-- In lab (the default, incl. unset `CODA_PROFILE`) → OBO is on. Set
-  `CODA_OBO_ENABLED=false` to fall back to PAT.
-- In `CODA_PROFILE=full` → the gate is **ignored entirely**; agent auth is always
-  PAT. OBO never engages outside lab.
-
-Resolution lives in `_obo_enabled` / `_agent_auth_mode` in `app.py`.
-
-### Runtime model (and the one caveat)
-
-The forwarded user token is **short-lived (~60 min)** and the app gets **no
-refresh token** — it can only ever be refreshed by a *new inbound request*
-carrying a fresh token. CoDA handles this in two ways:
-
-1. **Capture on every request.** `_capture_obo` reads the header on each
-   authenticated HTTP request and on the WebSocket handshake, dedupes it, and
-   pumps it into all agent CLI configs + `~/.databrickscfg` + `DATABRICKS_TOKEN`
-   (the same pipeline `PATRotator` uses). The first capture also triggers setup —
-   so in OBO mode the app boots with **no PAT prompt** and starts configuring as
-   soon as the attendee's first request lands.
-2. **Browser keepalive.** `static/index.html` pings `/api/obo-refresh` every
-   ~20 min (well under the ~60-min TTL). As long as the attendee's tab is open,
-   the token stays fresh and long agent runs keep working.
-
-> **Caveat (R2):** if the attendee **closes the tab** during a long *unattended*
-> run, no fresh token arrives and the current one will lapse (~60 min). For
-> attended lab/workshop sessions this is fine — keep the tab open. For unattended
-> or very long-running work, prefer the PAT fallback (`CODA_OBO_ENABLED=false`),
-> which refreshes server-side without a browser.
-
-### Provisioning (headless, by `scripts/lab_deploy.py`)
-
-OBO needs two pieces of workspace/app config, both provisioned headlessly so
-Control Tower (and `make lab-deploy`) need no manual UI steps:
-
-1. **Workspace scope allowlist** — `patch_public_workspace_setting` sets
-   `allowed_apps_user_api_scopes = ["all-apis"]` so apps in the workspace may
-   request the user token with full API breadth (`ensure_obo_scopes`).
-2. **Per-app scopes** — the app is created with
-   `user_api_scopes=["all-apis"]` (`ensure_app` / `enable_obo_and_create_app`).
-
-The workspace patch needs **workspace-admin** auth (Control Tower has it). A
-non-admin local `lab_deploy.py` run logs a warning and continues — the deploy
-still succeeds; OBO can be enabled separately, or attendees use the PAT prompt.
-Updated Control Tower contract (per attendee):
-
-```
-1. patch_public_workspace_setting(allowed_apps_user_api_scopes=["all-apis"])
-2. apps.create(App(name, user_api_scopes=["all-apis"], ...))
-3. apps.deploy + apps.update_permissions  (unchanged)
-4. env: CODA_AUTH_MODE=workspace, CODA_PROFILE=lab   (OBO on by default;
-        pass CODA_OBO_ENABLED=false to opt out)
-```
-
-### Residual preview-gate validation (one-time per account)
-
-> **TODO / validate once:** Confirm on ONE real attendee workspace whether
-> `patch_public_workspace_setting(allowed_apps_user_api_scopes=["all-apis"])` is
-> **sufficient on its own**, or whether the **account-level "On-Behalf-Of User
-> Authorization" Previews toggle** must also be enabled first. If the account
-> toggle is required, it is a **one-time account action** (account previews apply
-> to all workspaces) — record it here as a fleet-setup prerequisite, not a
-> per-attendee step. _Status: not yet validated on a live account._
-
 ## Attendee experience (lab profile)
 
 The lab profile is tuned so a first-time, possibly non-technical attendee can
@@ -306,10 +219,5 @@ retry-on-failure provisioning primitive.
 
 - Unit tests for the toggle logic and lab deploy: `tests/test_lean_profile.py`,
   `tests/test_lab_deploy.py`.
-- OBO agent auth: gate + mode resolver (`tests/test_agent_auth_mode.py`), token
-  capture + pump (`tests/test_obo_auth.py`, `tests/test_obo_capture.py`),
-  keepalive endpoint (`tests/test_obo_refresh.py`), endpoint/boot awareness
-  (`tests/test_obo_endpoints.py`, `tests/test_obo_boot.py`), and headless OBO
-  provisioning (`tests/test_lab_deploy_obo.py`).
 - Workspace-mode admission + acceptance gate (real infra, opt-in):
   `tests/e2e/test_lab_workspace_auth.py` (see `tests/e2e/README.md`).

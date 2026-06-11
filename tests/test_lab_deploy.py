@@ -152,22 +152,10 @@ class _Repos:
             raise self._raise
 
 
-class _WorkspaceSettingsV2:
-    """Records patch_public_workspace_setting calls (OBO scope enablement)."""
-
-    def __init__(self):
-        self.patch_calls = []
-
-    def patch_public_workspace_setting(self, name, setting):
-        self.patch_calls.append((name, setting))
-        return setting
-
-
 class _FakeClient:
-    def __init__(self, apps, repos=None, workspace_settings_v2=None):
+    def __init__(self, apps, repos=None):
         self.apps = apps
         self.repos = repos or _Repos()
-        self.workspace_settings_v2 = workspace_settings_v2 or _WorkspaceSettingsV2()
 
 
 # ── ensure_repo idempotency ──────────────────────────────────────────────
@@ -253,12 +241,6 @@ def test_deploy_lab_app_injects_lab_contract_env():
     assert deployment.source_code_path == (
         "/Workspace/Users/user@example.com/coding-agents-databricks-apps"
     )
-    assert env["CODA_OBO_ENABLED"] == "true"
-    # OBO enabled headlessly: workspace scope allowlist patched before create.
-    assert client.workspace_settings_v2.patch_calls
-    patched_name, patched_setting = client.workspace_settings_v2.patch_calls[0]
-    assert patched_name == "allowed_apps_user_api_scopes"
-    assert patched_setting.allowed_apps_user_api_scopes.allowed_scopes == ["all-apis"]
     # Attendee granted CAN_MANAGE by default.
     assert apps.perm_calls and apps.perm_calls[0][0] == "coda-lab"
 

@@ -37,20 +37,6 @@ env:
   # An unset CODA_PROFILE resolves to "lab". scripts/lab_deploy.py also sets it.
   - name: CODA_PROFILE
     value: "lab"
-  # --- Agent auth mode (OBO vs PAT) ----------------------------------------
-  # CODA_OBO_ENABLED gates On-Behalf-Of-User agent auth. **On by default in lab.**
-  #   In OBO mode the coding agents authenticate as the ATTENDEE via the
-  #   forwarded user token (x-forwarded-access-token) — no PAT prompt, and
-  #   everything they build/deploy is owned by the attendee. The token is kept
-  #   fresh by a browser keepalive while the tab is open (~60-min TTL), so OBO
-  #   suits attended lab/workshop sessions.
-  #   Set "false" to fall back to the PAT flow (user pastes a token; PATRotator
-  #   keeps it fresh — better for unattended/long-running work).
-  #   HARD-GATED to lab mode: ignored entirely when CODA_PROFILE=full (always PAT).
-  #   Requires the workspace OBO scope allowlist (all-apis) + app user_api_scopes,
-  #   which scripts/lab_deploy.py provisions headlessly.
-  - name: CODA_OBO_ENABLED
-    value: "true"
   # Per-agent overrides. An explicit value here ALWAYS wins over CODA_PROFILE,
   # so they are commented out by default to let the profile govern. Uncomment to
   # force a specific agent on/off regardless of profile. (Claude, AppKit, and the
