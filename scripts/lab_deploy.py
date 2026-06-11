@@ -57,11 +57,36 @@ LAB_ENV_OVERRIDES: dict[str, str] = {
     "CODA_OBO_ENABLED": "true",
 }
 
-# Per-APP OBO scope declaration (App.user_api_scopes). "all-apis" gives the
-# coding agents the full Databricks API breadth they need to build + deploy as
-# the attendee. NOTE: this is the *app-side* vocabulary and is distinct from the
-# *workspace allowlist* value below.
-OBO_SCOPES: list[str] = ["all-apis"]
+# Per-APP OBO scope declaration (App.user_api_scopes). The Databricks Apps
+# user-authorization scope catalog is GRANULAR and enumerated — the broad
+# "all-apis" token scope is NOT a valid app scope here and the Apps API rejects
+# it ("InvalidParameterValue: The specified scope all-apis is not a valid
+# scope"), which silently leaves the app with no user scopes → the forwarded
+# OBO token can't call anything → agents 403 with "required scopes: all-apis".
+# So we declare the explicit set the agents actually need. The critical one for
+# the agent CLIs is ``serving.serving-endpoints`` (the model-serving / Claude
+# gateway call). ``iam.access-control:read`` + ``iam.current-user:read`` are
+# always added by the platform as defaults, so we don't list them.
+#
+# NOT grantable via OBO today (the Apps API rejects them): jobs, clusters,
+# pipelines, secrets, catalog.volumes, catalog.functions, mlflow.experiments.
+# Agent operations against those APIs fall back to the app service principal /
+# PAT — they cannot run under the attendee's OBO token until the platform adds
+# those scopes. Keep this list to values the Apps API actually accepts; an
+# invalid entry fails the whole create/update.
+OBO_SCOPES: list[str] = [
+    "serving.serving-endpoints",   # model serving — Claude/agent gateway calls
+    "sql",                         # SQL warehouses
+    "sql.statement-execution",     # Statement Execution API
+    "dashboards.genie",            # Genie spaces
+    "files.files",                 # DBFS / UC files & volumes file IO
+    "vectorsearch.vector-search-indexes",
+    "catalog.catalogs",            # Unity Catalog browse/manage
+    "catalog.schemas",
+    "catalog.tables",
+    "catalog.connections",
+    "workspace.workspace",         # workspace objects (notebooks, dirs)
+]
 
 # Workspace-level scope ALLOWLIST value (allowedAppsUserApiScopes.allowed_scopes).
 # This uses a different vocabulary than the app-side scopes: "*" means "any
@@ -168,6 +193,14 @@ def _norm_setting(name: str) -> str:
     return name.lower().replace("_", "")
 
 
+def _bool_val(raw: Any) -> bool | None:
+    """Unwrap a settings boolean: ``BooleanMessage(value=...)`` or a bare bool."""
+    if raw is None:
+        return None
+    inner = getattr(raw, "value", raw)
+    return bool(inner) if inner is not None else None
+
+
 def resolve_setting_name(client: Any, *candidates: str) -> str:
     """Return the workspace's ACTUAL setting name matching any candidate.
 
@@ -256,7 +289,9 @@ def check_obo_gates(client: Any, *, enable_agents_obo: bool = True) -> dict[str,
         resolved[label] = name
         try:
             s = client.workspace_settings_v2.get_public_workspace_setting(name=name)
-            val = getattr(s, "effective_boolean_val", None)
+            # effective_boolean_val is a BooleanMessage(value=bool), not a bare
+            # bool — unwrap it so the `is False` checks below actually fire.
+            val = _bool_val(getattr(s, "effective_boolean_val", None))
             report[label] = val
             print(f"OBO gate '{name}': effective={val}")
         except Exception as exc:  # noqa: BLE001
@@ -318,6 +353,33 @@ def enable_obo_and_create_app(client: Any, app_name: str, **app_kwargs: Any) -> 
     )
 
 
+def _reconcile_app_scopes(
+    client: Any, app_name: str, existing: Any, want_scopes: list[str]
+) -> None:
+    """Patch ``user_api_scopes`` on an existing app if they don't already match.
+
+    Best-effort and idempotent: if the desired scopes are already a subset of
+    the app's declared scopes we skip the PATCH. Never raises — a failure here
+    (non-admin, API shape) must not abort the deploy; the app keeps whatever
+    scopes it had and the deploy continues.
+    """
+    from databricks.sdk.service.apps import App
+
+    current = set(getattr(existing, "user_api_scopes", None) or [])
+    if set(want_scopes).issubset(current):
+        print(f"app '{app_name}' user_api_scopes already cover {sorted(want_scopes)}; skipping")
+        return
+    try:
+        updated = client.apps.update(app_name, app=App(name=app_name, user_api_scopes=want_scopes))
+        print(f"app '{app_name}' user_api_scopes reconciled -> {getattr(updated, 'user_api_scopes', None)}")
+    except Exception as exc:  # noqa: BLE001 — never fail the deploy on scope reconcile
+        print(
+            f"WARNING: could not reconcile user_api_scopes on '{app_name}' ({exc}); "
+            "continuing with existing scopes.",
+            file=sys.stderr,
+        )
+
+
 def ensure_app(
     client: Any,
     app_name: str,
@@ -332,7 +394,11 @@ def ensure_app(
     - Otherwise create it and wait for it to go ACTIVE.
 
     When ``user_api_scopes`` is given, the app is created declaring those OBO
-    scopes (ignored for an already-existing app — scopes are set at create time).
+    scopes. For an already-existing app we *reconcile* the scopes via
+    ``apps.update`` (scopes can be patched on an existing app), so a redeploy
+    self-heals an app that was created before OBO — or with the wrong scopes.
+    The new scopes only take effect after the app is restarted (the deploy step
+    below restarts it).
     """
     from databricks.sdk.service.apps import App
 
@@ -340,6 +406,8 @@ def ensure_app(
     state = _compute_state(existing)
     if existing is not None and state != "DELETING":
         print(f"app '{app_name}' already exists (state={state or 'unknown'}); reusing")
+        if user_api_scopes is not None:
+            _reconcile_app_scopes(client, app_name, existing, user_api_scopes)
         return existing
 
     if state == "DELETING":

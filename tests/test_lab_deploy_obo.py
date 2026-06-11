@@ -161,4 +161,43 @@ def test_enable_obo_and_create_app_sets_scopes():
     assert len(apps.create_calls) == 1
     created = apps.create_calls[0]
     assert created.name == "lab-x"
-    assert created.user_api_scopes == ["all-apis"]
+    assert created.user_api_scopes == ld.OBO_SCOPES
+
+
+def test_obo_scopes_are_granular_not_all_apis():
+    # "all-apis" is NOT a valid Apps user-authorization scope — declaring it
+    # leaves the app unscoped and agents 403. The critical scope for the agent
+    # model/gateway call is serving.serving-endpoints.
+    assert "all-apis" not in ld.OBO_SCOPES
+    assert "serving.serving-endpoints" in ld.OBO_SCOPES
+
+
+# ── _bool_val unwraps BooleanMessage (real settings shape) ──────────────────
+
+
+class _BooleanMessage:
+    def __init__(self, value):
+        self.value = value
+
+
+def test_bool_val_unwraps_boolean_message():
+    assert ld._bool_val(_BooleanMessage(True)) is True
+    assert ld._bool_val(_BooleanMessage(False)) is False
+    assert ld._bool_val(True) is True
+    assert ld._bool_val(None) is None
+
+
+def test_check_obo_gates_enables_agents_obo_when_disabled_boolean_message():
+    # The live API returns BooleanMessage(value=...), not a bare bool — the
+    # disabled-gate detection must still fire.
+    reads = {
+        "enableOboUserApps": _Setting(effective_boolean_val=_BooleanMessage(True)),
+        "agentsObo": _Setting(effective_boolean_val=_BooleanMessage(False)),
+    }
+    ws = _WS(metadata_names=["enableOboUserApps", "agentsObo"], reads=reads)
+    report = ld.check_obo_gates(_Client(ws))
+    assert report["agentsObo"] is False or any(
+        name == "agentsObo" and getattr(s, "boolean_val", None) is True
+        for name, s in ws.patch_calls
+    )
+    assert any(name == "agentsObo" for name, _ in ws.patch_calls)

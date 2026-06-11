@@ -49,8 +49,10 @@ env:
   #   HARD-GATED to lab mode: ignored entirely when CODA_PROFILE=full (always PAT).
   #   Requires, at the workspace/account level: the scope allowlist
   #   (allowedAppsUserApiScopes, usually already "*") + app user_api_scopes
-  #   (all-apis) + the agentsObo gate enabled (often a one-time account/preview
-  #   toggle). scripts/lab_deploy.py provisions these headlessly (best-effort).
+  #   declaring a GRANULAR scope set (NOT "all-apis" — the Apps API rejects that;
+  #   the key scope is serving.serving-endpoints for the agent model calls) + the
+  #   agentsObo gate enabled (often a one-time account/preview toggle).
+  #   scripts/lab_deploy.py provisions these headlessly (best-effort).
   - name: CODA_OBO_ENABLED
     value: "true"
   # Per-agent overrides. An explicit value here ALWAYS wins over CODA_PROFILE,
